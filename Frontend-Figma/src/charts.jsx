@@ -3,9 +3,7 @@ import { useState } from "react";
 // Fixed categorical order per the brief's chart palette.
 export const SERIES = ["#6366f1", "#10b981", "#f59e0b", "#f43f5e", "#0ea5e9"];
 
-type Pt = { label: string; value: number };
-
-function TipBox({ label, value, dot }: { label: string; value: string; dot: string }) {
+function TipBox({ label, value, dot }) {
   return (
     <div className="pointer-events-none absolute right-2 top-0 z-10 rounded-lg bg-ink px-2.5 py-1.5 text-xs text-white shadow-lg">
       <div className="flex items-center gap-1.5 text-slate-300">
@@ -18,13 +16,13 @@ function TipBox({ label, value, dot }: { label: string; value: string; dot: stri
 }
 
 // Show at most ~8 axis labels so 30 daily bars don't collide.
-function labelStep(n: number) {
+function labelStep(n) {
   return Math.max(1, Math.ceil(n / 8));
 }
 
 // ---- Bar chart (adaptive to bar count) -------------------------------------
-export function BarChart({ data, color = "#6366f1" }: { data: Pt[]; color?: string }) {
-  const [hover, setHover] = useState<number | null>(null);
+export function BarChart({ data, color = "#6366f1" }) {
+  const [hover, setHover] = useState(null);
   const max = Math.max(...data.map((d) => d.value));
   const W = 320;
   const H = 160;
@@ -80,13 +78,13 @@ export function BarChart({ data, color = "#6366f1" }: { data: Pt[]; color?: stri
 }
 
 // ---- Line / Area chart -----------------------------------------------------
-export function LineChart({ data, color = "#0ea5e9", area = false }: { data: Pt[]; color?: string; area?: boolean }) {
-  const [hover, setHover] = useState<number | null>(null);
+export function LineChart({ data, color = "#0ea5e9", area = false }) {
+  const [hover, setHover] = useState(null);
   const max = Math.max(...data.map((d) => d.value)) * 1.1;
   const W = 320;
   const H = 160;
-  const px = (i: number) => (i / (data.length - 1)) * W;
-  const py = (v: number) => H - (v / max) * (H - 10) - 4;
+  const px = (i) => (i / (data.length - 1)) * W;
+  const py = (v) => H - (v / max) * (H - 10) - 4;
   const pts = data.map((d, i) => `${px(i)},${py(d.value)}`).join(" ");
   const step = labelStep(data.length);
   const showDots = data.length <= 14;
@@ -135,8 +133,8 @@ export function LineChart({ data, color = "#0ea5e9", area = false }: { data: Pt[
 }
 
 // ---- Stacked bar -----------------------------------------------------------
-export function StackedBar({ data, keys }: { data: (Pt & { parts: number[] })[]; keys: string[] }) {
-  const [hover, setHover] = useState<number | null>(null);
+export function StackedBar({ data, keys }) {
+  const [hover, setHover] = useState(null);
   const max = Math.max(...data.map((d) => d.parts.reduce((s, v) => s + v, 0)));
   const W = 320;
   const H = 160;
@@ -182,8 +180,8 @@ export function StackedBar({ data, keys }: { data: (Pt & { parts: number[] })[];
 }
 
 // ---- Variance: this year vs last year (grouped) ----------------------------
-export function VarianceBar({ data }: { data: { label: string; current: number; previous: number }[] }) {
-  const [hover, setHover] = useState<number | null>(null);
+export function VarianceBar({ data }) {
+  const [hover, setHover] = useState(null);
   const max = Math.max(...data.flatMap((d) => [d.current, d.previous]));
   const W = 320;
   const H = 160;
@@ -249,22 +247,19 @@ export function DonutChart({
   data,
   activeSlice,
   forceTooltip,
-}: {
-  data: Pt[];
-  activeSlice?: number;
-  forceTooltip?: boolean;
+  hoverLegend,
 }) {
-  const [hoverState, setHover] = useState<number | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
-  const toggle = (i: number) => setSelected((s) => (s === i ? null : i));
+  const [hoverState, setHover] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const toggle = (i) => setSelected((s) => (s === i ? null : i));
   // Click filters (isolates) a slice; hover only previews.
-  const hover = selected ?? activeSlice ?? hoverState;
+  const hover = selected ?? (activeSlice !== undefined ? activeSlice : hoverState);
   const total = data.reduce((s, d) => s + d.value, 0);
   const R = 52;
   const cx = 70;
   const cy = 70;
   let acc = 0;
-  const arc = (start: number, end: number, radius: number) => {
+  const arc = (start, end, radius) => {
     const a0 = (start / total) * 2 * Math.PI - Math.PI / 2;
     const a1 = (end / total) * 2 * Math.PI - Math.PI / 2;
     const large = end - start > total / 2 ? 1 : 0;
@@ -323,7 +318,7 @@ export function DonutChart({
               onMouseLeave={() => setHover(null)}
               onClick={() => toggle(i)}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-all ${
-                selected === i ? "bg-indigo-soft ring-1 ring-indigo/30" : hover === i ? "bg-slate-100" : ""
+                selected === i ? "bg-indigo-soft ring-1 ring-indigo/30" : hover === i || hoverLegend === i ? "bg-slate-100" : ""
               } ${selected !== null && selected !== i ? "opacity-40" : ""}`}
             >
               <span className="h-2.5 w-2.5 rounded-sm" style={{ background: SERIES[i % SERIES.length] }} />
@@ -340,14 +335,14 @@ export function DonutChart({
           </li>
         )}
       </ul>
-      {hover !== null && (forceTooltip ?? true) && activeSlice != null && (
-        <div className="pointer-events-none absolute left-14 top-2 z-10 rounded-lg bg-ink px-2.5 py-1.5 text-xs text-white shadow-lg">
+      {(hover !== null && (forceTooltip ?? true) && (activeSlice !== undefined || hoverState !== null)) && (
+        <div className="pointer-events-none absolute left-12 top-2 z-10 rounded-lg bg-ink px-2.5 py-1.5 text-xs text-white shadow-lg">
           <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-sm" style={{ background: SERIES[hover % SERIES.length] }} />
-            {data[hover].label}
+            <span className="h-2 w-2 rounded-sm" style={{ background: SERIES[(hover ?? 0) % SERIES.length] }} />
+            {data[hover ?? 0]?.label}
           </div>
           <div className="mt-0.5 font-semibold">
-            {Math.round((data[hover].value / total) * 100)}% · {data[hover].value.toLocaleString()}
+            {Math.round((data[hover ?? 0]?.value / total) * 100)}% · {data[hover ?? 0]?.value.toLocaleString()}
           </div>
         </div>
       )}
@@ -356,16 +351,15 @@ export function DonutChart({
 }
 
 // ---- Geo: tile cartogram with sequential fill ------------------------------
-type GeoTile = { code: string; name: string; col: number; row: number; value: number };
-export function GeoChart({ tiles }: { tiles: GeoTile[] }) {
-  const [hover, setHover] = useState<number | null>(null);
+export function GeoChart({ tiles }) {
+  const [hover, setHover] = useState(null);
   const max = Math.max(...tiles.map((t) => t.value));
   const min = Math.min(...tiles.map((t) => t.value));
   const cols = Math.max(...tiles.map((t) => t.col)) + 1;
   const rows = Math.max(...tiles.map((t) => t.row)) + 1;
   const size = 30;
   const gap = 4;
-  const shade = (v: number) => {
+  const shade = (v) => {
     const t = (v - min) / (max - min || 1);
     // sequential single-hue indigo, light -> dark
     return `rgba(79,70,229,${0.16 + t * 0.84})`;
@@ -414,8 +408,8 @@ export function GeoChart({ tiles }: { tiles: GeoTile[] }) {
 }
 
 // ---- Heatmap (weekday x week) ----------------------------------------------
-export function Heatmap({ matrix, rows }: { matrix: number[][]; rows: string[] }) {
-  const [hover, setHover] = useState<{ r: number; c: number } | null>(null);
+export function Heatmap({ matrix, rows }) {
+  const [hover, setHover] = useState(null);
   const max = Math.max(...matrix.flat());
   const cols = matrix[0].length;
   return (
@@ -452,14 +446,14 @@ export function Heatmap({ matrix, rows }: { matrix: number[][]; rows: string[] }
 }
 
 // ---- Gauge -----------------------------------------------------------------
-export function Gauge({ value, max = 100, label }: { value: number; max?: number; label: string }) {
+export function Gauge({ value, max = 100, label }) {
   const pct = Math.min(1, value / max);
   const R = 60;
   const cx = 80;
   const cy = 80;
   const a0 = Math.PI;
   const a1 = Math.PI - pct * Math.PI;
-  const arcPath = (from: number, to: number) =>
+  const arcPath = (from, to) =>
     `M ${cx + R * Math.cos(from)} ${cy - R * Math.sin(from)} A ${R} ${R} 0 ${to - from > Math.PI ? 1 : 0} 1 ${cx + R * Math.cos(to)} ${cy - R * Math.sin(to)}`;
   const color = pct > 0.66 ? SERIES[1] : pct > 0.33 ? SERIES[2] : SERIES[3];
   return (
@@ -481,7 +475,7 @@ export function Gauge({ value, max = 100, label }: { value: number; max?: number
   );
 }
 
-function Legend({ keys }: { keys: string[] }) {
+function Legend({ keys }) {
   return (
     <div className="mt-1 flex flex-wrap justify-center gap-3 text-[11px] text-ink-soft">
       {keys.map((k, i) => (

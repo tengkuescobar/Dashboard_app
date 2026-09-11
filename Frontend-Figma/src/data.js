@@ -1,7 +1,5 @@
 // Sample datasets for the mockup.
 
-export type Range = "7d" | "30d" | "12m";
-
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export const months12 = MONTHS.map((m, i) => ({
@@ -15,13 +13,13 @@ export const days30 = Array.from({ length: 30 }, (_, i) => ({
 }));
 
 // Range-aware series for bar / line / area charts.
-export function series(range: Range) {
+export function series(range) {
   if (range === "12m") return months12;
   if (range === "30d") return days30;
   return days30.slice(-7).map((d, i) => ({ label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i], value: d.value }));
 }
 
-export function rangeLabel(range: Range) {
+export function rangeLabel(range) {
   return range === "12m" ? "Last 12 months" : range === "30d" ? "Last 30 days" : "Last 7 days";
 }
 
