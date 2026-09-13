@@ -7,7 +7,6 @@
 @source '../**/*.blade.php';
 @source '../**/*.js';
 @source '../**/*.jsx';
-@source '../../Frontend-Figma/src/**/*.{js,jsx}';
 
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;

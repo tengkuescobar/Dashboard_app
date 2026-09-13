@@ -1,6 +1,6 @@
 import React from 'react';
-import App from '../../Frontend-Figma/src/App.jsx';
+import DashboardApp from './DashboardApp.jsx';
 
 export default function AppRoot() {
-    return <App />;
+    return <DashboardApp />;
 }
