@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { load as loadYaml } from "js-yaml";
 import {
   BarChart,
   DonutChart,
@@ -508,14 +509,33 @@ const WIZARD_TYPES = [
   { type: "summary", label: "Custom (YAML)", icon: IconCode },
 ];
 
+const DEFAULT_YAML = `type: bar
+title: Revenue by Region
+metric: revenue
+dimension: region
+endpoint: /api/reports/region-revenue`;
+
+const DEFAULT_YAML_CONFIG = {
+  type: "bar",
+  title: "Revenue by Region",
+  metric: "revenue",
+  dimension: "region",
+  endpoint: "/api/reports/region-revenue",
+};
+
 function AddChartModal({ onClose, onPublish }) {
   const [tab, setTab] = useState("builder");
   const [step, setStep] = useState(0); // 0: Step 1, 1: Step 2A/2B, 2: Step 3
   const [type, setType] = useState("bar");
   const [title, setTitle] = useState("");
   const [titleErr, setTitleErr] = useState(false);
-  const [customTab, setCustomTab] = useState("write");
-  const [yamlErr, setYamlErr] = useState(true);
+  const [customTab, setCustomTab] = useState("upload");
+  const [yamlCode, setYamlCode] = useState(DEFAULT_YAML);
+  const [yamlErr, setYamlErr] = useState(null);
+  const [customConfig, setCustomConfig] = useState(DEFAULT_YAML_CONFIG);
+  const [uploadedFileName, setUploadedFileName] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef(null);
   const [publishing, setPublishing] = useState(false);
   const [ai, setAi] = useState("");
   const [aiState, setAiState] = useState("idle");
@@ -524,6 +544,56 @@ function AddChartModal({ onClose, onPublish }) {
   const [selectedCatalogQuery, setSelectedCatalogQuery] = useState("revenue_by_region");
 
   const isCustom = type === "summary";
+
+  const handleYamlChange = (code) => {
+    setYamlCode(code);
+    try {
+      const parsed = loadYaml(code);
+      if (!parsed || typeof parsed !== "object") {
+        setYamlErr("Format YAML tidak valid: root harus berupa mapping key-value.");
+        return;
+      }
+      setCustomConfig({
+        type: parsed.type || "bar",
+        title: parsed.title || "Custom YAML Chart",
+        metric: parsed.metric || "revenue",
+        dimension: parsed.dimension || "region",
+        endpoint: parsed.endpoint || "/api/reports/region-revenue",
+      });
+      setYamlErr(null);
+    } catch (err) {
+      setYamlErr(err.message || 'Line 3: unexpected token ":" — mapping values are not allowed here.');
+    }
+  };
+
+  const handleFileUpload = (file) => {
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      setYamlErr("Ukuran file melebihi batas 1 MB.");
+      return;
+    }
+    setUploadedFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target.result;
+      handleYamlChange(content);
+    };
+    reader.onerror = () => {
+      setYamlErr("Gagal membaca file.");
+    };
+    reader.readAsText(file);
+  };
+
+  const toggleDemoError = () => {
+    if (!yamlErr) {
+      const buggyYaml = `type: bar\ntitle: Revenue by Region\nmetric:: revenue  # <- syntax error\ndimension: region`;
+      setYamlCode(buggyYaml);
+      setYamlErr('Line 3: unexpected token ":" — mapping values are not allowed here.');
+    } else {
+      setYamlCode(DEFAULT_YAML);
+      handleYamlChange(DEFAULT_YAML);
+    }
+  };
 
   useEffect(() => {
     getQueryCatalog()
@@ -544,6 +614,9 @@ function AddChartModal({ onClose, onPublish }) {
       setTitleErr(true);
       return;
     }
+    if (isCustom && yamlErr) {
+      return;
+    }
     setStep(2);
   };
 
@@ -551,12 +624,27 @@ function AddChartModal({ onClose, onPublish }) {
     setPublishing(true);
     const chosenQuery = catalog.find((q) => q.id === selectedCatalogQuery);
     setTimeout(() => {
-      onPublish({
-        ...mk(type, title.trim() || typeMeta[type].label),
-        endpoint: chosenQuery?.endpoint || (selectedCatalogQuery === "revenue_by_region" ? "/api/reports/region-revenue" : "/api/reports/category-summary"),
-        dimension: chosenQuery?.response_fields?.dimension || (selectedCatalogQuery === "revenue_by_region" ? "region" : "category"),
-        metric: chosenQuery?.response_fields?.metric || (selectedCatalogQuery === "revenue_by_region" ? "revenue" : "quantity"),
-      });
+      if (isCustom) {
+        onPublish({
+          id: "chart-" + Date.now(),
+          type: customConfig?.type || "bar",
+          title: customConfig?.title || "Custom YAML Chart",
+          endpoint: customConfig?.endpoint || "/api/reports/region-revenue",
+          dimension: customConfig?.dimension || "region",
+          metric: customConfig?.metric || "revenue",
+          period: "12m",
+          compare: true,
+          isCustom: true,
+          yamlRaw: yamlCode,
+        });
+      } else {
+        onPublish({
+          ...mk(type, title.trim() || typeMeta[type].label),
+          endpoint: chosenQuery?.endpoint || (selectedCatalogQuery === "revenue_by_region" ? "/api/reports/region-revenue" : "/api/reports/category-summary"),
+          dimension: chosenQuery?.response_fields?.dimension || (selectedCatalogQuery === "revenue_by_region" ? "region" : "category"),
+          metric: chosenQuery?.response_fields?.metric || (selectedCatalogQuery === "revenue_by_region" ? "revenue" : "quantity"),
+        });
+      }
       setPublishing(false);
     }, 600);
   };
@@ -724,7 +812,7 @@ function AddChartModal({ onClose, onPublish }) {
                       key={t}
                       onClick={() => setCustomTab(t)}
                       className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                        customTab === t ? "bg-white text-ink shadow-sm" : "text-ink-faint hover:text-ink-soft"
+                        customTab === t ? "bg-white text-ink shadow-sm font-semibold" : "text-ink-faint hover:text-ink-soft"
                       }`}
                     >
                       {t === "upload" ? "Upload File" : "Write YAML"}
@@ -733,54 +821,92 @@ function AddChartModal({ onClose, onPublish }) {
                 </div>
 
                 {customTab === "upload" ? (
-                  <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-line bg-slate-50/60 py-14 text-center transition-colors hover:border-indigo hover:bg-indigo-soft/40">
-                    <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-white text-indigo shadow-sm">
-                      <IconUpload width={22} />
-                    </span>
-                    <div className="text-sm font-medium text-ink">Click to upload or drag &amp; drop</div>
-                    <div className="text-xs text-ink-faint">YAML up to 1 MB</div>
-                  </div>
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".yaml,.yml,.txt"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) handleFileUpload(e.target.files[0]);
+                      }}
+                    />
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setIsDragging(true);
+                      }}
+                      onDragLeave={() => setIsDragging(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setIsDragging(false);
+                        if (e.dataTransfer.files?.[0]) handleFileUpload(e.dataTransfer.files[0]);
+                      }}
+                      className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-14 text-center transition-all ${
+                        isDragging
+                          ? "border-indigo bg-indigo-soft/50 scale-[1.01]"
+                          : "border-line bg-slate-50/60 hover:border-indigo hover:bg-indigo-soft/30"
+                      }`}
+                    >
+                      <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-white text-indigo shadow-sm">
+                        <IconUpload width={22} />
+                      </span>
+                      <div className="text-sm font-medium text-ink">
+                        {uploadedFileName ? (
+                          <span className="flex items-center gap-1.5 font-semibold text-emerald">
+                            <IconCheck width={16} /> {uploadedFileName}
+                          </span>
+                        ) : (
+                          "Click to upload or drag & drop"
+                        )}
+                      </div>
+                      <div className="text-xs text-ink-faint">
+                        {uploadedFileName ? "File siap dipreview. Klik atau drop file lain untuk mengganti" : "YAML up to 1 MB"}
+                      </div>
+                    </div>
+
+                    {yamlErr && (
+                      <div className="mt-3 flex items-start gap-3 rounded-lg border border-rose/30 bg-rose/5 p-3">
+                        <IconWarning width={18} className="mt-0.5 shrink-0 text-rose" />
+                        <div>
+                          <div className="text-sm font-semibold text-rose">Invalid YAML Configuration</div>
+                          <div className="mt-0.5 font-mono text-xs text-rose/80">{yamlErr}</div>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <>
-                    <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#0f172a] font-mono text-[13px] leading-relaxed">
+                    <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#0f172a] font-mono text-[13px] leading-relaxed shadow-inner">
                       <div className="flex items-center gap-1.5 border-b border-slate-800 px-4 py-2.5">
                         <span className="h-2.5 w-2.5 rounded-full bg-rose" />
                         <span className="h-2.5 w-2.5 rounded-full bg-amber" />
                         <span className="h-2.5 w-2.5 rounded-full bg-emerald" />
-                        <span className="ml-2 text-xs text-slate-500">chart.yaml</span>
+                        <span className="ml-2 text-xs text-slate-400">chart.yaml</span>
                         <button
                           type="button"
-                          onClick={() => setYamlErr((e) => !e)}
-                          className="ml-auto text-xs text-slate-400 hover:text-white"
+                          onClick={toggleDemoError}
+                          className="ml-auto rounded px-2 py-0.5 text-xs text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
                         >
                           {yamlErr ? "[Demo: Fix Error]" : "[Demo: Trigger Error]"}
                         </button>
                       </div>
-                      <pre className="overflow-x-auto px-4 py-3">
-                        <code>
-                          <span className="text-sky-400">type</span>
-                          <span className="text-slate-400">: </span>
-                          <span className="text-emerald-300">bar</span>
-                          {"\n"}
-                          <span className="text-sky-400">title</span>
-                          <span className="text-slate-400">: </span>
-                          <span className="text-emerald-300">Revenue by Region</span>
-                          {"\n"}
-                          <span className="text-sky-400">metric</span>
-                          <span className="text-slate-400">{yamlErr ? ":: " : ": "}</span>
-                          <span className={yamlErr ? "text-rose-400" : "text-amber-300"}>revenue</span>
-                          {yamlErr && <span className="text-slate-600">  # &larr; syntax error</span>}
-                        </code>
-                      </pre>
+                      <textarea
+                        value={yamlCode}
+                        onChange={(e) => handleYamlChange(e.target.value)}
+                        rows={7}
+                        className="w-full resize-none bg-transparent px-4 py-3 font-mono text-[13px] leading-relaxed text-slate-100 outline-none placeholder:text-slate-500"
+                        placeholder="Masukkan kode YAML chart..."
+                        spellCheck={false}
+                      />
                     </div>
                     {yamlErr && (
                       <div className="mt-3 flex items-start gap-3 rounded-lg border border-rose/30 bg-rose/5 p-3">
                         <IconWarning width={18} className="mt-0.5 shrink-0 text-rose" />
                         <div>
                           <div className="text-sm font-semibold text-rose">Invalid YAML Configuration</div>
-                          <div className="mt-0.5 font-mono text-xs text-rose/80">
-                            Line 3: unexpected token &quot;:&quot; — mapping values are not allowed here.
-                          </div>
+                          <div className="mt-0.5 font-mono text-xs text-rose/80">{yamlErr}</div>
                         </div>
                       </div>
                     )}
@@ -793,8 +919,10 @@ function AddChartModal({ onClose, onPublish }) {
             {step === 2 && (
               <div className="p-6">
                 <div className="rounded-xl border border-line bg-slate-50/50 p-5">
-                  <div className="mb-3 text-sm font-semibold text-ink">{title.trim() || typeMeta[type].label}</div>
-                  <PreviewChart type={type} />
+                  <div className="mb-3 text-sm font-semibold text-ink">
+                    {isCustom ? (customConfig?.title || "Custom YAML Chart") : (title.trim() || typeMeta[type].label)}
+                  </div>
+                  <PreviewChart type={isCustom ? (customConfig?.type || "bar") : type} />
                 </div>
               </div>
             )}
@@ -807,7 +935,7 @@ function AddChartModal({ onClose, onPublish }) {
               <div className="flex gap-2">
                 {step === 0 && <Btn onClick={() => setStep(1)}>Continue</Btn>}
                 {step === 1 && (
-                  <Btn onClick={goPreview} disabled={isCustom && yamlErr}>
+                  <Btn onClick={goPreview} disabled={isCustom ? !!yamlErr : false}>
                     Preview
                   </Btn>
                 )}
