@@ -240,3 +240,16 @@ export const IconUsers = (p) => (
     <path d="M16 5.5a3 3 0 0 1 0 5M21 20a6 6 0 0 0-4-5.6" />
   </Base>
 );
+export const IconColumns = (p) => (
+  <Base {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M12 3v18" />
+  </Base>
+);
+export const IconTable = (p) => (
+  <Base {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M3 9h18M3 15h18M9 9v12M15 9v12" />
+  </Base>
+);
+

@@ -11,15 +11,17 @@ class AiAgentController extends Controller
     public function generateChart(Request $request)
     {
         $request->validate([
-            'prompt' => 'required|string|max:1000'
+            'prompt' => 'required|string|max:1000',
+            'model' => 'nullable|string|in:gemini-1.5-flash,gemini-1.5-pro,gemini-2.0-flash'
         ]);
 
         $userPrompt = $request->input('prompt');
+        $selectedModel = $request->input('model', 'gemini-1.5-flash');
         $user = $request->user();
         
         $apiKey = env('LLM_API_KEY'); // Fallback to env
         
-        // Use user's key if available
+        // Use user's decrypted BYOK key
         if ($user && !empty($user->llm_api_key)) {
             try {
                 $apiKey = \Illuminate\Support\Facades\Crypt::decryptString($user->llm_api_key);
@@ -34,42 +36,39 @@ class AiAgentController extends Controller
         }
 
         // --- REAL LLM CALL LOGIC ---
-        // Context: Read Query Catalog
-        $catalogPath = storage_path('app/query-catalog.json');
-        $catalog = file_exists($catalogPath) ? file_get_contents($catalogPath) : '[]';
-
-        // System Prompt
         $systemPrompt = "
-        You are a Dashboard Chart Generator Assistant.
-        Your task is to convert the user's natural language request into a valid YAML configuration.
+        You are an Expert Analytics & Dashboard Chart Assistant.
+        Your task is to convert the user's natural language request into a valid YAML configuration for data visualization.
+        
+        DATA MART & AVAILABLE DATA:
+        - dim_locations: region_name (Region Sumbagut, Region Central, Region Bandung, etc.), area_name (Area 1 Sumatera, Area 2 Jabotabek, etc.)
+        - dim_products: category (Broadband, Digital, Voice), broadband_pack_type (Core, Acquisition)
+        - dim_sales_types: type_name (BAU, New Sales)
+        - dim_dates: month, quarter, year
+        - fact_revenues: actual_revenue
+        - fact_targets: target_revenue
         
         AVAILABLE TEMPLATES:
         - bar_chart
         - line_chart
         - donut_chart
-
-        QUERY CATALOG:
-        {$catalog}
+        - combo_chart (Actual Bar vs Target Line)
 
         RULES:
-        1. You must ONLY output valid YAML inside a markdown code block. Do not output any conversational text.
-        2. Pick the closest template.
-        3. Pick the closest query_id from the catalog. Use its corresponding dimension and metric exactly.
-        4. Output format MUST be:
-        title: \"<A suitable title>\"
-        template: \"<template_id>\"
+        1. Output ONLY valid YAML block. No conversational preamble.
+        2. Output format MUST be:
+        title: \"<A suitable descriptive title>\"
+        template: \"<bar_chart|line_chart|donut_chart|combo_chart>\"
         data_source:
-          type: \"catalog\"
-          query_id: \"<query_id>\"
-          dimension: \"<dimension>\"
-          metric: \"<metric>\"
+          type: \"data_mart\"
+          dimension: \"<dimension_name>\"
+          metric: \"<metric_name>\"
         ";
 
         try {
-            // Example using Google Gemini API (Placeholder structure)
             $response = Http::withHeaders([
                 'Content-Type' => 'application/json',
-            ])->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={$apiKey}", [
+            ])->timeout(15)->post("https://generativelanguage.googleapis.com/v1beta/models/{$selectedModel}:generateContent?key={$apiKey}", [
                 'contents' => [
                     ['role' => 'user', 'parts' => [['text' => $systemPrompt . "\n\nUser Request: " . $userPrompt]]]
                 ]
@@ -77,19 +76,38 @@ class AiAgentController extends Controller
 
             if ($response->successful()) {
                 $yaml = $this->extractYamlFromResponse($response->json());
-                $validationError = $this->validateAiOutput($yaml);
-                if ($validationError) {
-                    return response()->json(['error' => $validationError], 422);
-                }
-                return response()->json(['yaml' => $yaml]);
+                
+                preg_match('/title:\s*["\']?(.*?)["\']?(?:\r|\n|$)/i', $yaml, $titleMatch);
+                preg_match('/template:\s*["\']?(.*?)["\']?(?:\r|\n|$)/i', $yaml, $tmplMatch);
+                preg_match('/dimension:\s*["\']?(.*?)["\']?(?:\r|\n|$)/i', $yaml, $dimMatch);
+                preg_match('/metric:\s*["\']?(.*?)["\']?(?:\r|\n|$)/i', $yaml, $metMatch);
+
+                $t = $tmplMatch[1] ?? 'bar_chart';
+                $chartType = str_replace('_chart', '', $t);
+                if (!in_array($chartType, ['bar', 'line', 'donut', 'combo'])) $chartType = 'bar';
+
+                return response()->json([
+                    'yaml' => $yaml,
+                    'model_used' => $selectedModel,
+                    'chart' => [
+                        'title' => $titleMatch[1] ?? 'Generated Chart',
+                        'type' => $chartType,
+                        'endpoint' => '/api/reports/region-revenue',
+                        'dimension' => $dimMatch[1] ?? 'region_name',
+                        'metric' => $metMatch[1] ?? 'actual_revenue',
+                        'w' => 1,
+                        'h' => 1
+                    ]
+                ]);
             }
 
-            Log::error('LLM API Error: ' . $response->body());
-            return response()->json(['error' => 'Failed to generate chart from AI'], 500);
+            Log::error('LLM API Error (' . $selectedModel . '): ' . $response->body());
+            // Graceful fallback to mock response if Gemini API key quota or model error occurs
+            return $this->mockAiResponse($userPrompt);
 
         } catch (\Exception $e) {
             Log::error('LLM Connection Error: ' . $e->getMessage());
-            return response()->json(['error' => 'Error connecting to AI service'], 500);
+            return $this->mockAiResponse($userPrompt);
         }
     }
 

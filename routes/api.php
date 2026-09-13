@@ -24,6 +24,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/reports/category-summary', [QueryCatalogController::class, 'categorySummary']);
     Route::get('/reports/region-revenue', [QueryCatalogController::class, 'regionRevenue']);
 
+    // Star Schema Data Mart Engine
+    Route::get('/data-mart/meta', [App\Http\Controllers\DataMartController::class, 'getMetadata']);
+    Route::post('/data-mart/query', [App\Http\Controllers\DataMartController::class, 'query']);
+    Route::post('/data-mart/sql', [App\Http\Controllers\DataMartController::class, 'runCustomSql']);
+
     // AI Agent Integration (Phase 8)
     Route::post('/ai/generate-chart', [AiAgentController::class, 'generateChart']);
 

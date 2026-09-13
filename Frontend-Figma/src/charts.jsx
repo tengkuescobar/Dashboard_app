@@ -487,3 +487,113 @@ function Legend({ keys }) {
     </div>
   );
 }
+
+// ---- Combo Chart (Bar + Line for Actual vs Target / Multi-metric) ----------
+export function ComboChart({ data, barKey = "actual", lineKey = "target", barLabel = "Actual", lineLabel = "Target" }) {
+  const [hover, setHover] = useState(null);
+  if (!data || data.length === 0) {
+    return <div className="flex h-full items-center justify-center text-xs text-ink-faint">No data available</div>;
+  }
+
+  // Derive keys if not explicitly matching
+  const firstItem = data[0];
+  const keys = Object.keys(firstItem).filter((k) => k !== "label" && typeof firstItem[k] === "number");
+  const actualBarKey = keys.includes(barKey) ? barKey : (keys[0] || "value");
+  const actualLineKey = keys.includes(lineKey) ? lineKey : (keys[1] || keys[0] || "value");
+
+  const max = Math.max(...data.map((d) => Math.max(Number(d[actualBarKey] || 0), Number(d[actualLineKey] || 0))), 1) * 1.1;
+  const W = 320;
+  const H = 160;
+  const pad = 8;
+  const bw = (W - pad * 2) / data.length;
+  const step = labelStep(data.length);
+
+  const px = (i) => pad + i * bw + bw / 2;
+  const py = (v) => H - (v / max) * (H - 14) - 4;
+  const pts = data.map((d, i) => `${px(i)},${py(Number(d[actualLineKey] || 0))}`).join(" ");
+
+  return (
+    <div className="relative flex h-full w-full flex-col">
+      <svg viewBox={`0 0 ${W} ${H + 22}`} className="min-h-0 w-full flex-1">
+        {[0.25, 0.5, 0.75, 1].map((t) => (
+          <line key={t} x1={0} x2={W} y1={H - H * t} y2={H - H * t} stroke="#f1f5f9" strokeWidth={1} />
+        ))}
+        {/* Bars */}
+        {data.map((d, i) => {
+          const val = Number(d[actualBarKey] || 0);
+          const h = (val / max) * (H - 14);
+          const gap = bw * 0.22;
+          const x = pad + i * bw + gap;
+          const w = Math.max(bw - gap * 2, 4);
+          const active = hover === i;
+          return (
+            <g key={`bar-${i}`}>
+              <rect
+                x={x}
+                y={H - h}
+                width={w}
+                height={Math.max(h, 2)}
+                rx={3}
+                fill={SERIES[0]}
+                opacity={hover === null || active ? 0.9 : 0.4}
+                style={{ transition: "opacity .15s" }}
+              />
+              <rect
+                x={pad + i * bw}
+                y={0}
+                width={bw}
+                height={H}
+                fill="transparent"
+                onMouseEnter={() => setHover(i)}
+                onMouseLeave={() => setHover(null)}
+              />
+              {i % step === 0 && (
+                <text x={px(i)} y={H + 15} textAnchor="middle" fontSize={9} fill="#94a3b8">
+                  {d.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {/* Line for target / second metric */}
+        <polyline points={pts} fill="none" stroke={SERIES[2]} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+        {data.map((d, i) => {
+          const val = Number(d[actualLineKey] || 0);
+          return (
+            <circle
+              key={`dot-${i}`}
+              cx={px(i)}
+              cy={py(val)}
+              r={hover === i ? 5 : 3.5}
+              fill="#fff"
+              stroke={SERIES[2]}
+              strokeWidth={2}
+            />
+          );
+        })}
+      </svg>
+      {hover !== null && (
+        <div className="pointer-events-none absolute right-2 top-0 z-10 rounded-lg bg-ink px-2.5 py-1.5 text-xs text-white shadow-lg">
+          <div className="font-semibold text-slate-200">{data[hover].label}</div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-sm" style={{ background: SERIES[0] }} />
+            <span>{barLabel}: {Number(data[hover][actualBarKey] || 0).toLocaleString()}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-sm" style={{ background: SERIES[2] }} />
+            <span>{lineLabel}: {Number(data[hover][actualLineKey] || 0).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+      <div className="mt-1 flex justify-center gap-4 text-[11px] text-ink-soft">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: SERIES[0] }} /> {barLabel} (Bar)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: SERIES[2] }} /> {lineLabel} (Line)
+        </span>
+      </div>
+    </div>
+  );
+}
+

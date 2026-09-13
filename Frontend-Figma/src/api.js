@@ -121,10 +121,28 @@ export async function fetchReportData(endpoint) {
   return apiRequest(cleanEndpoint);
 }
 
-export async function askAiGenerateChart(prompt) {
+export async function askAiGenerateChart(prompt, model = 'gemini-1.5-flash') {
   return apiRequest('/ai/generate-chart', {
     method: 'POST',
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, model }),
+  });
+}
+
+export async function getDataMartMeta() {
+  return apiRequest('/data-mart/meta');
+}
+
+export async function queryDataMart(payload) {
+  return apiRequest('/data-mart/query', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function executeDataMartSql(sql) {
+  return apiRequest('/data-mart/sql', {
+    method: 'POST',
+    body: JSON.stringify({ sql }),
   });
 }
 

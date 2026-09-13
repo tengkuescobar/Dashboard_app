@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { load as loadYaml } from "js-yaml";
 import {
   BarChart,
+  ComboChart,
   DonutChart,
   Gauge,
   GeoChart,
@@ -23,6 +24,7 @@ import {
   IconClose,
   IconCloud,
   IconCode,
+  IconColumns,
   IconCompare,
   IconCopy,
   IconDonut,
@@ -31,6 +33,7 @@ import {
   IconGauge,
   IconGlobe,
   IconGrid,
+  IconGrip,
   IconInfo,
   IconLayers,
   IconLine,
@@ -39,6 +42,7 @@ import {
   IconSend,
   IconSparkle,
   IconStar,
+  IconTable,
   IconTarget,
   IconTrash,
   IconUpload,
@@ -68,6 +72,9 @@ import {
   getQueryCatalog,
   askAiGenerateChart,
   saveLlmApiKey,
+  getDataMartMeta,
+  queryDataMart,
+  executeDataMartSql,
   getUsers,
   createUser,
   updateUser,
@@ -112,6 +119,7 @@ const typeMeta = {
   geo: { icon: IconGlobe, label: "Geo Map", w: 1, h: 2 },
   heatmap: { icon: IconGrid, label: "Heatmap", w: 2, h: 1 },
   gauge: { icon: IconGauge, label: "Gauge / KPI", w: 1, h: 1 },
+  combo: { icon: IconCompare, label: "Combo (Bar + Line)", w: 2, h: 1 },
   summary: { icon: IconCode, label: "Custom (YAML)", w: 1, h: 1 },
 };
 
@@ -256,58 +264,148 @@ function Select({ children, ...props }) {
 // Chart renderer with real API support & spec states
 // ---------------------------------------------------------------------------
 function ChartBody({ chart, range }) {
-  const [state, setState] = useState(chart.endpoint ? "loading" : "ok");
+  const [state, setState] = useState(
+    chart.data && chart.data.length > 0
+      ? "ok"
+      : chart.sql || chart.query_config || chart.endpoint
+      ? "loading"
+      : "ok"
+  );
   const [errored, setErrored] = useState(!!chart.broken);
-  const [apiData, setApiData] = useState(null);
+  const [apiData, setApiData] = useState(chart.data && chart.data.length > 0 ? chart.data : null);
 
   useEffect(() => {
-    if (!chart.endpoint) {
+    if (chart.data && chart.data.length > 0) {
+      setApiData(chart.data);
       setState("ok");
       return;
     }
+
     let active = true;
-    setState("loading");
-    setErrored(false);
 
-    fetchReportData(chart.endpoint)
-      .then((res) => {
-        if (!active) return;
-        const raw = res?.data || [];
-        const dim = chart.dimension || "region";
-        const met = chart.metric || "revenue";
-        const formatted = raw.map((item) => ({
-          label: String(item[dim] || item.label || Object.keys(item)[0] || "Unknown"),
-          value: Number(item[met] || item.value || Object.values(item)[1] || 0),
-        }));
-        setApiData(formatted);
-        setState("ok");
-      })
-      .catch((err) => {
-        if (!active) return;
-        console.error("Failed to load chart data:", err);
-        setErrored(true);
-        setState("error");
-      });
+    if (chart.sql) {
+      setState("loading");
+      setErrored(false);
+      executeDataMartSql(chart.sql)
+        .then((res) => {
+          if (!active) return;
+          const rows = res?.rows || [];
+          const cols = res?.columns || [];
+          if (rows.length === 0) {
+            setApiData([]);
+            setState("ok");
+            return;
+          }
+          const labelKey = cols.find((c) => typeof rows[0][c] === "string") || cols[0];
+          const numCols = cols.filter((c) => c !== labelKey && !isNaN(Number(rows[0][c])));
+          const formatted = rows.map((r) => {
+            const item = { label: String(r[labelKey] || "Unknown") };
+            if (numCols.length >= 2) {
+              item.actual = Number(r[numCols[0]] || 0);
+              item.target = Number(r[numCols[1]] || 0);
+              item.value = item.actual;
+            } else if (numCols.length === 1) {
+              item.value = Number(r[numCols[0]] || 0);
+            } else {
+              item.value = Number(Object.values(r)[1] || 0);
+            }
+            return item;
+          });
+          setApiData(formatted);
+          setState("ok");
+        })
+        .catch((err) => {
+          if (!active) return;
+          console.error("SQL load error:", err);
+          setErrored(true);
+          setState("error");
+        });
+      return () => { active = false; };
+    }
 
-    return () => {
-      active = false;
-    };
-  }, [chart.endpoint, chart.dimension, chart.metric]);
+    if (chart.query_config) {
+      setState("loading");
+      setErrored(false);
+      queryDataMart(chart.query_config)
+        .then((res) => {
+          if (!active) return;
+          setApiData(res?.data || []);
+          setState("ok");
+        })
+        .catch((err) => {
+          if (!active) return;
+          console.error("Data Mart load error:", err);
+          setErrored(true);
+          setState("error");
+        });
+      return () => { active = false; };
+    }
+
+    if (chart.endpoint) {
+      setState("loading");
+      setErrored(false);
+      fetchReportData(chart.endpoint)
+        .then((res) => {
+          if (!active) return;
+          const raw = res?.data || [];
+          const dim = chart.dimension || "region";
+          const met = chart.metric || "revenue";
+          const formatted = raw.map((item) => ({
+            label: String(item[dim] || item.label || Object.keys(item)[0] || "Unknown"),
+            value: Number(item[met] || item.value || Object.values(item)[1] || 0),
+          }));
+          setApiData(formatted);
+          setState("ok");
+        })
+        .catch((err) => {
+          if (!active) return;
+          console.error("Failed to load chart data:", err);
+          setErrored(true);
+          setState("error");
+        });
+      return () => { active = false; };
+    }
+
+    setState("ok");
+    return () => { active = false; };
+  }, [chart.sql, chart.query_config, chart.endpoint, chart.data]);
 
   const handleRetry = () => {
     setErrored(false);
     setState("loading");
-    if (chart.endpoint) {
+    if (chart.sql) {
+      executeDataMartSql(chart.sql)
+        .then((res) => {
+          const rows = res?.rows || [];
+          const cols = res?.columns || [];
+          const labelKey = cols.find((c) => typeof rows[0]?.[c] === "string") || cols[0];
+          const numCols = cols.filter((c) => c !== labelKey);
+          setApiData(
+            rows.map((r) => ({
+              label: String(r[labelKey] || "Unknown"),
+              value: Number(r[numCols[0]] || 0),
+              actual: Number(r[numCols[0]] || 0),
+              target: Number(r[numCols[1]] || 0),
+            }))
+          );
+          setState("ok");
+        })
+        .catch(() => {
+          setErrored(true);
+          setState("error");
+        });
+    } else if (chart.endpoint) {
       fetchReportData(chart.endpoint)
         .then((res) => {
           const raw = res?.data || [];
           const dim = chart.dimension || "region";
           const met = chart.metric || "revenue";
-          const formatted = raw.map((item) => ({
-            label: String(item[dim] || item.label || "Unknown"),
-            value: Number(item[met] || item.value || 0),
-          }));
-          setApiData(formatted);
+          setApiData(
+            raw.map((item) => ({
+              label: String(item[dim] || item.label || "Unknown"),
+              value: Number(item[met] || item.value || 0),
+            }))
+          );
           setState("ok");
         })
         .catch(() => {
@@ -315,22 +413,18 @@ function ChartBody({ chart, range }) {
           setState("error");
         });
     } else {
-      setTimeout(() => setState("ok"), 1000);
+      setTimeout(() => setState("ok"), 800);
     }
   };
 
   if (errored) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center p-4">
         <span className="flex h-11 w-11 items-center justify-center rounded-full bg-rose/10 text-rose">
           <IconWarning width={22} />
         </span>
         <div className="text-sm font-medium text-ink">Gagal memuat data</div>
-        <Btn
-          variant="outline"
-          className="mt-1 px-3 py-1.5 text-xs"
-          onClick={handleRetry}
-        >
+        <Btn variant="outline" className="mt-1 px-3 py-1.5 text-xs" onClick={handleRetry}>
           <IconRefresh width={14} /> Coba Lagi
         </Btn>
       </div>
@@ -347,9 +441,28 @@ function ChartBody({ chart, range }) {
     );
   }
 
+  if (chart.customSvg || chart.svg) {
+    return (
+      <div
+        className="flex h-full w-full items-center justify-center overflow-hidden p-2"
+        dangerouslySetInnerHTML={{ __html: chart.customSvg || chart.svg }}
+      />
+    );
+  }
+
   const s = apiData && apiData.length > 0 ? apiData : series(range);
 
   switch (chart.type) {
+    case "combo":
+      return (
+        <ComboChart
+          data={s}
+          barKey={chart.barKey || "actual"}
+          lineKey={chart.lineKey || "target"}
+          barLabel={chart.barLabel || "Actual"}
+          lineLabel={chart.lineLabel || "Target"}
+        />
+      );
     case "bar":
       return <BarChart data={s} />;
     case "line":
@@ -361,13 +474,13 @@ function ChartBody({ chart, range }) {
     case "variance":
       return <VarianceBar data={varianceData} />;
     case "donut":
-      return <DonutChart data={apiData && apiData.length > 0 ? apiData : donutData} />;
+      return <DonutChart data={s} />;
     case "geo":
       return <GeoChart tiles={geoTiles} />;
     case "heatmap":
       return <Heatmap matrix={heatmapMatrix} rows={heatmapRows} />;
     case "gauge":
-      return <Gauge value={78} label="of $92K target" />;
+      return <Gauge value={chart.value || 78} label={chart.subtitle || "of Target"} />;
     default:
       return (
         <div className="flex flex-1 flex-col justify-center gap-4">
@@ -395,31 +508,73 @@ function ChartBody({ chart, range }) {
 }
 
 // ---------------------------------------------------------------------------
-// Clean chart card (header + titik tiga + body)
+// Clean chart card (header + grip + resize + titik tiga + body)
 // ---------------------------------------------------------------------------
 function ChartCard({
   chart,
+  index,
   range,
   onDelete,
   onDuplicate,
   onEdit,
+  onToggleWidth,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  isDragging,
 }) {
   const [menu, setMenu] = useState(false);
 
   return (
-    <div className="group relative flex min-h-[300px] flex-col rounded-xl border border-line bg-white p-4 shadow-sm transition-all hover:border-indigo/50 hover:shadow-md">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-ink">{chart.title}</h3>
-        <button
-          type="button"
-          onClick={() => setMenu((m) => !m)}
-          className={`rounded p-1 text-ink-faint transition-opacity hover:bg-slate-100 hover:text-ink ${
-            menu ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-          }`}
-          title="More options"
-        >
-          <IconDots width={16} />
-        </button>
+    <div
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      className={`group relative flex min-h-[320px] flex-col rounded-xl border bg-white p-4 shadow-sm transition-all ${
+        chart.w === 2 ? "col-span-1 md:col-span-2" : "col-span-1"
+      } ${
+        isDragging
+          ? "opacity-35 border-dashed border-indigo scale-[0.98] shadow-inner"
+          : "border-line hover:border-indigo/50 hover:shadow-md"
+      }`}
+    >
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-indigo transition-colors p-0.5 rounded hover:bg-slate-100 shrink-0"
+            title="Tarik untuk memindahkan posisi chart"
+          >
+            <IconGrip width={16} />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-ink truncate">{chart.title}</h3>
+            {chart.subtitle && <p className="text-[11px] text-ink-faint truncate">{chart.subtitle}</p>}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={onToggleWidth}
+            className="rounded p-1 text-ink-faint transition-all hover:bg-slate-100 hover:text-indigo opacity-0 group-hover:opacity-100"
+            title={chart.w === 2 ? "Perkecil: 1 Kolom (50%)" : "Perbesar: 2 Kolom (Full Width)"}
+          >
+            <IconColumns width={16} className={chart.w === 2 ? "text-indigo" : ""} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setMenu((m) => !m)}
+            className={`rounded p-1 text-ink-faint transition-opacity hover:bg-slate-100 hover:text-ink ${
+              menu ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+            }`}
+            title="Pilihan lainnya"
+          >
+            <IconDots width={16} />
+          </button>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col justify-center">
@@ -429,7 +584,7 @@ function ChartCard({
       {menu && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
-          <div className="absolute right-3 top-10 z-20 w-36 overflow-hidden rounded-lg border border-line bg-white py-1 text-sm shadow-lg">
+          <div className="absolute right-3 top-10 z-20 w-44 overflow-hidden rounded-lg border border-line bg-white py-1 text-sm shadow-lg">
             <button
               type="button"
               onClick={() => {
@@ -438,7 +593,17 @@ function ChartCard({
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-ink-soft hover:bg-slate-50"
             >
-              <IconEdit width={14} /> Edit
+              <IconEdit width={14} /> Edit Chart
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onToggleWidth();
+                setMenu(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-ink-soft hover:bg-slate-50"
+            >
+              <IconColumns width={14} /> {chart.w === 2 ? "Ubah ke 1 Kolom" : "Ubah ke 2 Kolom"}
             </button>
             <button
               type="button"
@@ -448,7 +613,7 @@ function ChartCard({
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-ink-soft hover:bg-slate-50"
             >
-              <IconCopy width={14} /> Duplicate
+              <IconCopy width={14} /> Duplikasi
             </button>
             <div className="my-1 h-px bg-line" />
             <button
@@ -459,7 +624,7 @@ function ChartCard({
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-rose hover:bg-rose/5"
             >
-              <IconTrash width={14} /> Delete
+              <IconTrash width={14} /> Hapus
             </button>
           </div>
         </>
@@ -510,22 +675,28 @@ function ToastStack({ toasts, dismiss }) {
 const WIZARD_TYPES = [
   { type: "bar", label: "Bar Chart", icon: IconChart },
   { type: "line", label: "Line Chart", icon: IconLine },
+  { type: "combo", label: "Combo (Bar+Line)", icon: IconCompare },
   { type: "donut", label: "Donut Chart", icon: IconDonut },
   { type: "summary", label: "Custom (YAML)", icon: IconCode },
 ];
 
-const DEFAULT_YAML = `type: bar
-title: Revenue by Region
-metric: revenue
-dimension: region
-endpoint: /api/reports/region-revenue`;
+const DEFAULT_YAML = `type: combo
+title: Pendapatan vs Target per Kategori
+data_source: data_mart
+fact: fact_revenues
+dimensions:
+  - category_name
+metrics:
+  - actual_revenue
+  - target_revenue`;
 
 const DEFAULT_YAML_CONFIG = {
-  type: "bar",
-  title: "Revenue by Region",
-  metric: "revenue",
-  dimension: "region",
-  endpoint: "/api/reports/region-revenue",
+  type: "combo",
+  title: "Pendapatan vs Target per Kategori",
+  data_source: "data_mart",
+  fact: "fact_revenues",
+  dimensions: ["category_name"],
+  metrics: ["actual_revenue", "target_revenue"],
 };
 
 function AddChartModal({ onClose, onPublish }) {
@@ -533,7 +704,26 @@ function AddChartModal({ onClose, onPublish }) {
   const [step, setStep] = useState(0); // 0: Step 1, 1: Step 2A/2B, 2: Step 3
   const [type, setType] = useState("bar");
   const [title, setTitle] = useState("");
+  const [subtitle, setSubtitle] = useState("");
   const [titleErr, setTitleErr] = useState(false);
+
+  // Step 2A Data Mart state
+  const [dataMode, setDataMode] = useState("builder"); // "builder" | "sql"
+  const [selectedFact, setSelectedFact] = useState("fact_revenues");
+  const [selectedDims, setSelectedDims] = useState(["category_name"]);
+  const [selectedMetrics, setSelectedMetrics] = useState(["actual_revenue", "target_revenue"]);
+  const [livePreviewData, setLivePreviewData] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Custom SQL state
+  const [sqlText, setSqlText] = useState(
+    `SELECT p.category, ROUND(SUM(f.actual_revenue)/1000000, 2) as actual_revenue_mio, ROUND(AVG(t.target_revenue)/1000000, 2) as target_revenue_mio\nFROM fact_revenues f\nJOIN dim_products p ON f.dim_product_id = p.id\nJOIN fact_targets t ON f.dim_date_id = t.dim_date_id AND f.dim_product_id = t.dim_product_id\nGROUP BY p.category`
+  );
+  const [sqlResult, setSqlResult] = useState(null);
+  const [sqlError, setSqlError] = useState(null);
+  const [sqlLoading, setSqlLoading] = useState(false);
+
+  // Step 2B YAML state
   const [customTab, setCustomTab] = useState("upload");
   const [yamlCode, setYamlCode] = useState(DEFAULT_YAML);
   const [yamlErr, setYamlErr] = useState(null);
@@ -541,14 +731,85 @@ function AddChartModal({ onClose, onPublish }) {
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
-  const [publishing, setPublishing] = useState(false);
+
+  // Ask AI state
   const [ai, setAi] = useState("");
+  const [aiModel, setAiModel] = useState("gemini-1.5-flash");
   const [aiState, setAiState] = useState("idle");
   const [aiResultChart, setAiResultChart] = useState(null);
-  const [catalog, setCatalog] = useState([]);
-  const [selectedCatalogQuery, setSelectedCatalogQuery] = useState("revenue_by_region");
 
+  const [publishing, setPublishing] = useState(false);
   const isCustom = type === "summary";
+
+  const handleToggleDim = (dim) => {
+    setSelectedDims((prev) =>
+      prev.includes(dim)
+        ? prev.length > 1
+          ? prev.filter((d) => d !== dim)
+          : prev
+        : [...prev, dim]
+    );
+  };
+
+  const handleToggleMetric = (met) => {
+    setSelectedMetrics((prev) =>
+      prev.includes(met)
+        ? prev.length > 1
+          ? prev.filter((m) => m !== met)
+          : prev
+        : [...prev, met]
+    );
+  };
+
+  const fetchLivePreview = async () => {
+    setPreviewLoading(true);
+    try {
+      const res = await queryDataMart({
+        fact: selectedFact,
+        dimensions: selectedDims,
+        metrics: selectedMetrics,
+      });
+      if (res?.data) {
+        setLivePreviewData(res.data);
+      }
+    } catch (err) {
+      console.error("Live preview error:", err);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const runCustomSql = async () => {
+    if (!sqlText.trim()) return;
+    setSqlLoading(true);
+    setSqlError(null);
+    try {
+      const res = await executeDataMartSql(sqlText.trim());
+      setSqlResult(res);
+      const rows = res?.rows || [];
+      const cols = res?.columns || [];
+      if (rows.length > 0) {
+        const labelKey = cols.find((c) => typeof rows[0][c] === "string") || cols[0];
+        const numCols = cols.filter((c) => c !== labelKey && !isNaN(Number(rows[0][c])));
+        const formatted = rows.map((r) => {
+          const item = { label: String(r[labelKey] || "Unknown") };
+          if (numCols.length >= 2) {
+            item.actual = Number(r[numCols[0]] || 0);
+            item.target = Number(r[numCols[1]] || 0);
+            item.value = item.actual;
+          } else if (numCols.length === 1) {
+            item.value = Number(r[numCols[0]] || 0);
+          }
+          return item;
+        });
+        setLivePreviewData(formatted);
+      }
+    } catch (err) {
+      setSqlError(err.message || "Gagal mengeksekusi query SQL.");
+    } finally {
+      setSqlLoading(false);
+    }
+  };
 
   const handleYamlChange = (code) => {
     setYamlCode(code);
@@ -559,15 +820,22 @@ function AddChartModal({ onClose, onPublish }) {
         return;
       }
       setCustomConfig({
-        type: parsed.type || "bar",
-        title: parsed.title || "Custom YAML Chart",
-        metric: parsed.metric || "revenue",
-        dimension: parsed.dimension || "region",
-        endpoint: parsed.endpoint || "/api/reports/region-revenue",
+        type: parsed.type || parsed.template || "bar",
+        title: parsed.title || parsed.name || "Custom YAML Chart",
+        metric: parsed.metric || (Array.isArray(parsed.metrics) ? parsed.metrics[0] : "actual_revenue"),
+        metrics: Array.isArray(parsed.metrics) ? parsed.metrics : [parsed.metric || "actual_revenue"],
+        dimension: parsed.dimension || (Array.isArray(parsed.dimensions) ? parsed.dimensions[0] : "category_name"),
+        dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions : [parsed.dimension || "category_name"],
+        endpoint: parsed.endpoint || parsed.data_source || null,
+        data: parsed.data || null,
+        sql: parsed.sql || parsed.query || null,
+        customSvg: parsed.svg || null,
+        customHtml: parsed.html || null,
+        w: parsed.w || (parsed.type === "combo" ? 2 : 1),
       });
       setYamlErr(null);
     } catch (err) {
-      setYamlErr(err.message || 'Line 3: unexpected token ":" — mapping values are not allowed here.');
+      setYamlErr(err.message || "Format YAML tidak valid.");
     }
   };
 
@@ -589,76 +857,11 @@ function AddChartModal({ onClose, onPublish }) {
     reader.readAsText(file);
   };
 
-  const toggleDemoError = () => {
-    if (!yamlErr) {
-      const buggyYaml = `type: bar\ntitle: Revenue by Region\nmetric:: revenue  # <- syntax error\ndimension: region`;
-      setYamlCode(buggyYaml);
-      setYamlErr('Line 3: unexpected token ":" — mapping values are not allowed here.');
-    } else {
-      setYamlCode(DEFAULT_YAML);
-      handleYamlChange(DEFAULT_YAML);
-    }
-  };
-
-  useEffect(() => {
-    getQueryCatalog()
-      .then((res) => {
-        if (res?.queries) setCatalog(res.queries);
-      })
-      .catch((err) => console.error("Could not fetch query catalog:", err));
-  }, []);
-
-  const getStepTitle = () => {
-    if (step === 0) return "Add Chart";
-    if (step === 1) return isCustom ? "Custom Chart (YAML)" : `Configure ${typeMeta[type].label}`;
-    return "Preview";
-  };
-
-  const goPreview = () => {
-    if (!isCustom && !title.trim()) {
-      setTitleErr(true);
-      return;
-    }
-    if (isCustom && yamlErr) {
-      return;
-    }
-    setStep(2);
-  };
-
-  const publish = () => {
-    setPublishing(true);
-    const chosenQuery = catalog.find((q) => q.id === selectedCatalogQuery);
-    setTimeout(() => {
-      if (isCustom) {
-        onPublish({
-          id: "chart-" + Date.now(),
-          type: customConfig?.type || "bar",
-          title: customConfig?.title || "Custom YAML Chart",
-          endpoint: customConfig?.endpoint || "/api/reports/region-revenue",
-          dimension: customConfig?.dimension || "region",
-          metric: customConfig?.metric || "revenue",
-          period: "12m",
-          compare: true,
-          isCustom: true,
-          yamlRaw: yamlCode,
-        });
-      } else {
-        onPublish({
-          ...mk(type, title.trim() || typeMeta[type].label),
-          endpoint: chosenQuery?.endpoint || (selectedCatalogQuery === "revenue_by_region" ? "/api/reports/region-revenue" : "/api/reports/category-summary"),
-          dimension: chosenQuery?.response_fields?.dimension || (selectedCatalogQuery === "revenue_by_region" ? "region" : "category"),
-          metric: chosenQuery?.response_fields?.metric || (selectedCatalogQuery === "revenue_by_region" ? "revenue" : "quantity"),
-        });
-      }
-      setPublishing(false);
-    }, 600);
-  };
-
   const runAi = async () => {
     if (!ai.trim()) return;
     setAiState("thinking");
     try {
-      const res = await askAiGenerateChart(ai.trim());
+      const res = await askAiGenerateChart(ai.trim(), aiModel);
       if (res?.no_data) {
         setAiState("noData");
       } else if (res?.chart) {
@@ -670,6 +873,76 @@ function AddChartModal({ onClose, onPublish }) {
     } catch {
       setAiState("noData");
     }
+  };
+
+  const getStepTitle = () => {
+    if (step === 0) return "Add Chart";
+    if (step === 1) return isCustom ? "Custom Chart (YAML)" : `Configure ${typeMeta[type]?.label || "Chart"}`;
+    return "Preview & Publish";
+  };
+
+  const goPreview = () => {
+    if (!isCustom && !title.trim()) {
+      setTitleErr(true);
+      return;
+    }
+    if (isCustom && yamlErr) return;
+
+    if (!isCustom && !livePreviewData && dataMode === "builder") {
+      fetchLivePreview();
+    }
+    setStep(2);
+  };
+
+  const publish = () => {
+    setPublishing(true);
+    setTimeout(() => {
+      if (isCustom) {
+        onPublish({
+          id: "chart-" + Date.now(),
+          type: customConfig?.type || "bar",
+          title: customConfig?.title || "Custom YAML Chart",
+          w: customConfig?.w || (customConfig?.type === "combo" ? 2 : 1),
+          dimensions: customConfig?.dimensions || ["category_name"],
+          metrics: customConfig?.metrics || ["actual_revenue"],
+          data: customConfig?.data || null,
+          sql: customConfig?.sql || null,
+          customSvg: customConfig?.customSvg || null,
+          customHtml: customConfig?.customHtml || null,
+          yamlRaw: yamlCode,
+          isCustom: true,
+        });
+      } else if (dataMode === "sql" && sqlText) {
+        onPublish({
+          id: "chart-" + Date.now(),
+          type: type,
+          title: title.trim(),
+          subtitle: subtitle.trim() || undefined,
+          w: type === "combo" ? 2 : 1,
+          sql: sqlText.trim(),
+          data: livePreviewData,
+          data_source: "custom_sql",
+        });
+      } else {
+        onPublish({
+          id: "chart-" + Date.now(),
+          type: type,
+          title: title.trim(),
+          subtitle: subtitle.trim() || undefined,
+          w: type === "combo" || selectedDims.length > 1 ? 2 : 1,
+          query_config: {
+            fact: selectedFact,
+            dimensions: selectedDims,
+            metrics: selectedMetrics,
+          },
+          dimension: selectedDims[0],
+          metric: selectedMetrics[0],
+          data: livePreviewData,
+          data_source: "data_mart",
+        });
+      }
+      setPublishing(false);
+    }, 400);
   };
 
   return (
@@ -691,9 +964,14 @@ function AddChartModal({ onClose, onPublish }) {
             ) : (
               <div className="flex gap-2">
                 <button
-                  onClick={() => { setTab("builder"); setStep(0); }}
+                  onClick={() => {
+                    setTab("builder");
+                    setStep(0);
+                  }}
                   className={`flex items-center gap-1.5 border-b-2 pb-1 text-sm font-medium transition-colors ${
-                    tab === "builder" ? "border-indigo text-ink font-semibold" : "border-transparent text-ink-faint hover:text-ink-soft"
+                    tab === "builder"
+                      ? "border-indigo text-ink font-semibold"
+                      : "border-transparent text-ink-faint hover:text-ink-soft"
                   }`}
                 >
                   Add Chart
@@ -701,7 +979,9 @@ function AddChartModal({ onClose, onPublish }) {
                 <button
                   onClick={() => setTab("ai")}
                   className={`flex items-center gap-1.5 border-b-2 pb-1 text-sm font-medium transition-colors ${
-                    tab === "ai" ? "border-indigo text-ink font-semibold" : "border-transparent text-ink-faint hover:text-ink-soft"
+                    tab === "ai"
+                      ? "border-indigo text-ink font-semibold"
+                      : "border-transparent text-ink-faint hover:text-ink-soft"
                   }`}
                 >
                   <IconSparkle width={15} className={tab === "ai" ? "text-indigo" : ""} />
@@ -720,11 +1000,11 @@ function AddChartModal({ onClose, onPublish }) {
 
         {tab === "builder" ? (
           <>
-            {/* Step 1: Pilih Tipe (4 kartu sejajar) */}
+            {/* Step 1: Pilih Tipe (5 kartu) */}
             {step === 0 && (
               <div className="p-6">
                 <div className="mb-3 text-xs font-medium text-ink-faint">Pilih salah satu tipe chart di bawah:</div>
-                <div className="grid grid-cols-4 gap-3.5">
+                <div className="grid grid-cols-5 gap-3">
                   {WIZARD_TYPES.map((t) => {
                     const Icon = t.icon;
                     const active = type === t.type;
@@ -736,22 +1016,22 @@ function AddChartModal({ onClose, onPublish }) {
                           setType(t.type);
                           setStep(1);
                         }}
-                        className={`group flex flex-col items-center gap-3 rounded-xl border p-4 text-center transition-all ${
+                        className={`group flex flex-col items-center gap-2.5 rounded-xl border p-3 text-center transition-all ${
                           active
                             ? "border-indigo bg-indigo-soft/60 shadow-[0_8px_24px_-10px_rgba(99,102,241,0.45)] ring-1 ring-indigo"
                             : "border-line hover:border-indigo hover:shadow-md hover:scale-[1.02]"
                         }`}
                       >
                         <span
-                          className={`flex h-12 w-12 items-center justify-center rounded-xl transition-all ${
+                          className={`flex h-11 w-11 items-center justify-center rounded-xl transition-all ${
                             active
                               ? "scale-110 bg-indigo text-white shadow-sm"
                               : "bg-slate-100 text-ink-soft group-hover:scale-105 group-hover:bg-indigo-soft group-hover:text-indigo"
                           }`}
                         >
-                          <Icon width={24} />
+                          <Icon width={22} />
                         </span>
-                        <span className={`text-xs font-semibold leading-tight ${active ? "text-indigo-dark" : "text-ink"}`}>
+                        <span className={`text-[11px] font-semibold leading-tight ${active ? "text-indigo-dark" : "text-ink"}`}>
                           {t.label}
                         </span>
                       </button>
@@ -761,54 +1041,297 @@ function AddChartModal({ onClose, onPublish }) {
               </div>
             )}
 
-            {/* Step 2A: Konfigurasi Cepat (Bar / Line / Donut) */}
+            {/* Step 2A: Konfigurasi Fleksibel Data Mart / SQL (Bar / Line / Combo / Donut) */}
             {step === 1 && !isCustom && (
-              <div className="space-y-4 p-6">
-                <Field label="Chart Title" error={titleErr ? "Judul chart wajib diisi" : undefined}>
-                  <input
-                    autoFocus
-                    value={title}
-                    onChange={(e) => {
-                      setTitle(e.target.value);
-                      if (e.target.value.trim()) setTitleErr(false);
-                    }}
-                    placeholder="e.g. Revenue by Region"
-                    className={titleErr ? "w-full rounded-lg border border-rose bg-rose/5 px-3 py-2.5 text-sm outline-none ring-2 ring-rose/20 text-rose" : inputCls}
-                  />
-                </Field>
-                <div className="grid grid-cols-2 gap-4">
-                  <Field label="Data Source">
-                    <Select
-                      value={selectedCatalogQuery}
-                      onChange={(e) => setSelectedCatalogQuery(e.target.value)}
-                    >
-                      <option value="revenue_by_region">Revenue by Region (BigQuery)</option>
-                      <option value="sales_by_category">Sales by Category (Orders)</option>
-                      <option value="sessions">Web Sessions</option>
-                      <option value="subscriptions">Customer Subscriptions</option>
-                    </Select>
+              <div className="space-y-4 p-6 max-h-[70vh] overflow-y-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Field label="Chart Title" error={titleErr ? "Judul chart wajib diisi" : undefined}>
+                    <input
+                      autoFocus
+                      value={title}
+                      onChange={(e) => {
+                        setTitle(e.target.value);
+                        if (e.target.value.trim()) setTitleErr(false);
+                      }}
+                      placeholder="e.g. Pendapatan vs Target per Kategori"
+                      className={
+                        titleErr
+                          ? "w-full rounded-lg border border-rose bg-rose/5 px-3 py-2 text-sm outline-none ring-2 ring-rose/20 text-rose"
+                          : inputCls
+                      }
+                    />
                   </Field>
-                  <Field label="Dimension">
-                    <Select defaultValue="region">
-                      <option value="region">Region</option>
-                      <option value="category">Category</option>
-                      <option value="month">Month</option>
-                      <option value="channel">Channel</option>
-                    </Select>
+                  <Field label="Subjudul / Deskripsi (Opsional)">
+                    <input
+                      value={subtitle}
+                      onChange={(e) => setSubtitle(e.target.value)}
+                      placeholder="e.g. Realisasi Bulanan 2024"
+                      className={inputCls}
+                    />
                   </Field>
                 </div>
-                <Field label="Metric">
-                  <Select defaultValue="revenue">
-                    <option value="revenue">Sum of Revenue</option>
-                    <option value="quantity">Total Quantity</option>
-                    <option value="orders">Count of Orders</option>
-                    <option value="aov">Avg Order Value</option>
-                  </Select>
-                </Field>
+
+                {/* Mode Selector: Visual Data Mart Builder vs Custom SQL Query */}
+                <div className="flex rounded-lg border border-line bg-slate-50 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setDataMode("builder")}
+                    className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition-all ${
+                      dataMode === "builder" ? "bg-white text-indigo shadow-sm" : "text-ink-faint hover:text-ink"
+                    }`}
+                  >
+                    Visual Data Mart Builder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDataMode("sql")}
+                    className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition-all ${
+                      dataMode === "sql" ? "bg-white text-indigo shadow-sm" : "text-ink-faint hover:text-ink"
+                    }`}
+                  >
+                    Custom SQL Query (Live)
+                  </button>
+                </div>
+
+                {dataMode === "builder" ? (
+                  <div className="space-y-4 rounded-xl border border-line bg-slate-50/50 p-4">
+                    <Field label="Tabel Fakta (Data Mart)">
+                      <Select value={selectedFact} onChange={(e) => setSelectedFact(e.target.value)}>
+                        <option value="fact_revenues">fact_revenues (Pendapatan & Realisasi)</option>
+                        <option value="fact_targets">fact_targets (Target Penjualan & MoM)</option>
+                        <option value="fact_drivers">fact_drivers (Metrik Driver Telecom)</option>
+                      </Select>
+                    </Field>
+
+                    {/* Multi-Dimension Selector */}
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-xs font-medium text-ink-soft">
+                          Dimensi (Pilih 1 atau lebih):
+                        </span>
+                        <span className="text-[11px] text-ink-faint">
+                          {selectedDims.length} dimensi terpilih
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { id: "category_name", label: "Kategori Produk" },
+                          { id: "month_name", label: "Bulan" },
+                          { id: "region_name", label: "Region" },
+                          { id: "sales_type_name", label: "Tipe Sales" },
+                          { id: "year", label: "Tahun" },
+                        ].map((dim) => {
+                          const active = selectedDims.includes(dim.id);
+                          return (
+                            <button
+                              key={dim.id}
+                              type="button"
+                              onClick={() => handleToggleDim(dim.id)}
+                              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                                active
+                                  ? "bg-indigo text-white shadow-sm ring-1 ring-indigo"
+                                  : "border border-line bg-white text-ink-soft hover:bg-slate-100"
+                              }`}
+                            >
+                              {active && <IconCheck width={12} />}
+                              {dim.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Multi-Metric Selector */}
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-xs font-medium text-ink-soft">
+                          Metrik (Pilih 1 atau lebih untuk Combo/Multi-bar):
+                        </span>
+                        <span className="text-[11px] text-ink-faint">
+                          {selectedMetrics.length} metrik terpilih
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { id: "actual_revenue", label: "Actual Revenue" },
+                          { id: "target_revenue", label: "Target Revenue" },
+                          { id: "achievement_pct", label: "Achievement %" },
+                          { id: "driver_value", label: "Driver Value" },
+                        ].map((met) => {
+                          const active = selectedMetrics.includes(met.id);
+                          return (
+                            <button
+                              key={met.id}
+                              type="button"
+                              onClick={() => handleToggleMetric(met.id)}
+                              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                                active
+                                  ? "bg-emerald text-white shadow-sm ring-1 ring-emerald"
+                                  : "border border-line bg-white text-ink-soft hover:bg-slate-100"
+                              }`}
+                            >
+                              {active && <IconCheck width={12} />}
+                              {met.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2">
+                      <button
+                        type="button"
+                        onClick={fetchLivePreview}
+                        disabled={previewLoading}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-indigo bg-indigo-soft/60 px-3 py-1.5 text-xs font-semibold text-indigo hover:bg-indigo-soft"
+                      >
+                        <IconRefresh width={13} className={previewLoading ? "animate-spin" : ""} />
+                        {previewLoading ? "Memuat Data..." : "Jalankan Query & Preview Data"}
+                      </button>
+                      {livePreviewData && (
+                        <span className="text-xs font-medium text-emerald">
+                          ✓ {livePreviewData.length} baris data ditemukan
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Live Preview Table */}
+                    {livePreviewData && livePreviewData.length > 0 && (
+                      <div className="mt-2 max-h-36 overflow-auto rounded-lg border border-line bg-white text-xs">
+                        <table className="w-full text-left">
+                          <thead className="sticky top-0 bg-slate-50 text-[11px] text-ink-faint uppercase border-b border-line">
+                            <tr>
+                              <th className="p-2">Label / Dimensi</th>
+                              {Object.keys(livePreviewData[0])
+                                .filter((k) => k !== "label")
+                                .map((k) => (
+                                  <th key={k} className="p-2">{k}</th>
+                                ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-line">
+                            {livePreviewData.slice(0, 5).map((row, idx) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2 font-medium text-ink">{row.label}</td>
+                                {Object.keys(row)
+                                  .filter((k) => k !== "label")
+                                  .map((k) => (
+                                    <td key={k} className="p-2 tabular-nums">
+                                      {typeof row[k] === "number" ? row[k].toLocaleString() : String(row[k])}
+                                    </td>
+                                  ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* Custom SQL Query Mode */
+                  <div className="space-y-3 rounded-xl border border-line bg-slate-50/50 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-ink-soft">
+                        Query SQL Langsung ke Data Mart:
+                      </span>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSqlText(
+                              `SELECT p.category, ROUND(SUM(f.actual_revenue)/1000000, 2) as actual_revenue_mio, ROUND(AVG(t.target_revenue)/1000000, 2) as target_revenue_mio\nFROM fact_revenues f\nJOIN dim_products p ON f.dim_product_id = p.id\nJOIN fact_targets t ON f.dim_date_id = t.dim_date_id AND f.dim_product_id = t.dim_product_id\nGROUP BY p.category`
+                            )
+                          }
+                          className="rounded px-2 py-0.5 text-[11px] font-medium text-indigo bg-indigo-soft hover:bg-indigo-soft/80"
+                        >
+                          Template: Revenue vs Target
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSqlText(
+                              `SELECT l.region_name, ROUND(SUM(f.actual_revenue)/1000000, 2) as actual_revenue_mio\nFROM fact_revenues f\nJOIN dim_locations l ON f.dim_location_id = l.id\nGROUP BY l.region_name\nORDER BY actual_revenue_mio DESC`
+                            )
+                          }
+                          className="rounded px-2 py-0.5 text-[11px] font-medium text-slate-600 bg-slate-200 hover:bg-slate-300"
+                        >
+                          Template: Regional
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSqlText(
+                              `SELECT m.metric_name, ROUND(AVG(d.metric_value), 0) as actual_metric, ROUND(AVG(d.target_value), 0) as target_metric\nFROM fact_drivers d\nJOIN dim_metrics m ON d.dim_metric_id = m.id\nGROUP BY m.metric_name`
+                            )
+                          }
+                          className="rounded px-2 py-0.5 text-[11px] font-medium text-emerald-700 bg-emerald-100 hover:bg-emerald-200"
+                        >
+                          Template: Driver Telecom
+                        </button>
+                      </div>
+                    </div>
+
+                    <textarea
+                      value={sqlText}
+                      onChange={(e) => setSqlText(e.target.value)}
+                      rows={5}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900 p-3 font-mono text-xs text-emerald-300 outline-none focus:border-indigo"
+                      placeholder="SELECT ... FROM fact_... GROUP BY ..."
+                    />
+
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={runCustomSql}
+                        disabled={sqlLoading}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-dark shadow-sm"
+                      >
+                        <IconRefresh width={13} className={sqlLoading ? "animate-spin" : ""} />
+                        {sqlLoading ? "Mengeksekusi..." : "Jalankan SQL & Preview Data"}
+                      </button>
+                      {sqlResult && (
+                        <span className="text-xs font-medium text-emerald">
+                          ✓ Berhasil: {sqlResult.rows?.length || 0} baris ditemukan
+                        </span>
+                      )}
+                    </div>
+
+                    {sqlError && (
+                      <div className="rounded-lg border border-rose/30 bg-rose/5 p-2.5 text-xs text-rose">
+                        {sqlError}
+                      </div>
+                    )}
+
+                    {sqlResult && sqlResult.rows?.length > 0 && (
+                      <div className="max-h-36 overflow-auto rounded-lg border border-line bg-white text-xs">
+                        <table className="w-full text-left">
+                          <thead className="sticky top-0 bg-slate-50 text-[11px] text-ink-faint uppercase border-b border-line">
+                            <tr>
+                              {sqlResult.columns?.map((col) => (
+                                <th key={col} className="p-2">{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-line">
+                            {sqlResult.rows.slice(0, 5).map((row, idx) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                {sqlResult.columns?.map((col) => (
+                                  <td key={col} className="p-2 tabular-nums">
+                                    {typeof row[col] === "number" ? row[col].toLocaleString() : String(row[col])}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Step 2B: Custom YAML */}
+            {/* Step 2B: Custom YAML Upload & Write */}
             {step === 1 && isCustom && (
               <div className="p-6">
                 <div className="mb-4 inline-flex rounded-lg bg-slate-100 p-1">
@@ -817,10 +1340,12 @@ function AddChartModal({ onClose, onPublish }) {
                       key={t}
                       onClick={() => setCustomTab(t)}
                       className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                        customTab === t ? "bg-white text-ink shadow-sm font-semibold" : "text-ink-faint hover:text-ink-soft"
+                        customTab === t
+                          ? "bg-white text-ink shadow-sm font-semibold"
+                          : "text-ink-faint hover:text-ink-soft"
                       }`}
                     >
-                      {t === "upload" ? "Upload File" : "Write YAML"}
+                      {t === "upload" ? "Upload File YAML" : "Tulis YAML"}
                     </button>
                   ))}
                 </div>
@@ -834,10 +1359,10 @@ function AddChartModal({ onClose, onPublish }) {
                       className="hidden"
                       onChange={(e) => {
                         if (e.target.files?.[0]) handleFileUpload(e.target.files[0]);
+                        e.target.value = "";
                       }}
                     />
                     <div
-                      onClick={() => fileInputRef.current?.click()}
                       onDragOver={(e) => {
                         e.preventDefault();
                         setIsDragging(true);
@@ -848,7 +1373,7 @@ function AddChartModal({ onClose, onPublish }) {
                         setIsDragging(false);
                         if (e.dataTransfer.files?.[0]) handleFileUpload(e.dataTransfer.files[0]);
                       }}
-                      className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-14 text-center transition-all ${
+                      className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-10 text-center transition-all ${
                         isDragging
                           ? "border-indigo bg-indigo-soft/50 scale-[1.01]"
                           : "border-line bg-slate-50/60 hover:border-indigo hover:bg-indigo-soft/30"
@@ -863,11 +1388,20 @@ function AddChartModal({ onClose, onPublish }) {
                             <IconCheck width={16} /> {uploadedFileName}
                           </span>
                         ) : (
-                          "Click to upload or drag & drop"
+                          "Tarik file YAML ke sini atau klik tombol di bawah"
                         )}
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="inline-flex items-center gap-2 rounded-lg bg-indigo px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-dark"
+                      >
+                        <IconUpload width={14} /> Pilih File (.yaml / .yml)
+                      </button>
                       <div className="text-xs text-ink-faint">
-                        {uploadedFileName ? "File siap dipreview. Klik atau drop file lain untuk mengganti" : "YAML up to 1 MB"}
+                        {uploadedFileName
+                          ? "File berhasil dimuat dan siap dipreview."
+                          : "Mendukung format YAML chart standar hingga 1 MB"}
                       </div>
                     </div>
 
@@ -889,18 +1423,23 @@ function AddChartModal({ onClose, onPublish }) {
                         <span className="h-2.5 w-2.5 rounded-full bg-amber" />
                         <span className="h-2.5 w-2.5 rounded-full bg-emerald" />
                         <span className="ml-2 text-xs text-slate-400">chart.yaml</span>
-                        <button
-                          type="button"
-                          onClick={toggleDemoError}
-                          className="ml-auto rounded px-2 py-0.5 text-xs text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
-                        >
-                          {yamlErr ? "[Demo: Fix Error]" : "[Demo: Trigger Error]"}
-                        </button>
+                        <div className="ml-auto flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setYamlCode(DEFAULT_YAML);
+                              handleYamlChange(DEFAULT_YAML);
+                            }}
+                            className="rounded px-2 py-0.5 text-xs text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                          >
+                            Reset Template
+                          </button>
+                        </div>
                       </div>
                       <textarea
                         value={yamlCode}
                         onChange={(e) => handleYamlChange(e.target.value)}
-                        rows={7}
+                        rows={8}
                         className="w-full resize-none bg-transparent px-4 py-3 font-mono text-[13px] leading-relaxed text-slate-100 outline-none placeholder:text-slate-500"
                         placeholder="Masukkan kode YAML chart..."
                         spellCheck={false}
@@ -924,10 +1463,20 @@ function AddChartModal({ onClose, onPublish }) {
             {step === 2 && (
               <div className="p-6">
                 <div className="rounded-xl border border-line bg-slate-50/50 p-5">
-                  <div className="mb-3 text-sm font-semibold text-ink">
-                    {isCustom ? (customConfig?.title || "Custom YAML Chart") : (title.trim() || typeMeta[type].label)}
+                  <div className="mb-3">
+                    <div className="text-sm font-semibold text-ink">
+                      {isCustom ? customConfig?.title || "Custom YAML Chart" : title.trim() || typeMeta[type]?.label}
+                    </div>
+                    {subtitle.trim() && (
+                      <div className="text-xs text-ink-faint">{subtitle.trim()}</div>
+                    )}
                   </div>
-                  <PreviewChart type={isCustom ? (customConfig?.type || "bar") : type} />
+                  <div className="h-56">
+                    <PreviewChart
+                      type={isCustom ? customConfig?.type || "bar" : type}
+                      data={livePreviewData}
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -935,13 +1484,13 @@ function AddChartModal({ onClose, onPublish }) {
             {/* Modal Footer */}
             <div className="flex items-center justify-between border-t border-line px-6 py-4">
               <Btn variant="outline" onClick={onClose}>
-                Cancel
+                Batal
               </Btn>
               <div className="flex gap-2">
-                {step === 0 && <Btn onClick={() => setStep(1)}>Continue</Btn>}
+                {step === 0 && <Btn onClick={() => setStep(1)}>Lanjutkan</Btn>}
                 {step === 1 && (
                   <Btn onClick={goPreview} disabled={isCustom ? !!yamlErr : false}>
-                    Preview
+                    Preview Chart
                   </Btn>
                 )}
                 {step === 2 && (
@@ -949,7 +1498,7 @@ function AddChartModal({ onClose, onPublish }) {
                     {publishing ? (
                       <span className="spin h-4 w-4 rounded-full border-2 border-white/40 border-t-white" />
                     ) : (
-                      "Publish"
+                      "Publish Chart"
                     )}
                   </Btn>
                 )}
@@ -957,49 +1506,36 @@ function AddChartModal({ onClose, onPublish }) {
             </div>
           </>
         ) : (
-          /* Tab Ask AI */
+          /* Tab Ask AI dengan Model Selector (Gemini BYOK) */
           <div className="space-y-4 p-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-ink-soft">Pilih Model Gemini:</span>
+                <Select value={aiModel} onChange={(e) => setAiModel(e.target.value)} className="text-xs py-1">
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Cepat &amp; Hemat)</option>
+                  <option value="gemini-1.5-pro">Gemini 1.5 Pro (Penalaran Mendalam)</option>
+                  <option value="gemini-2.0-flash">Gemini 2.0 Flash (Next-gen Fast)</option>
+                </Select>
+              </div>
+              <span className="inline-flex items-center gap-1 rounded-full bg-indigo-soft px-2.5 py-0.5 text-[11px] font-semibold text-indigo">
+                <IconSparkle width={12} /> BYOK Gemini Active
+              </span>
+            </div>
+
             <div className="flex items-center gap-2 rounded-xl border border-line bg-white p-2 shadow-sm focus-within:border-indigo focus-within:ring-2 focus-within:ring-indigo/20">
               <input
                 value={ai}
                 onChange={(e) => setAi(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && runAi()}
                 className="flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-ink-faint"
-                placeholder="Describe the chart you want, e.g. 'Show revenue by region as a bar chart'"
+                placeholder="Deskripsikan chart yang diinginkan, misal: 'Tampilkan perbandingan revenue vs target broadband'"
               />
               <button
                 onClick={runAi}
                 className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo text-white transition-colors hover:bg-indigo-dark"
+                title="Kirim ke AI"
               >
                 <IconSend width={16} />
-              </button>
-            </div>
-
-            {/* State Switcher for Previewing All AI States */}
-            <div className="flex items-center gap-1.5 text-xs text-ink-faint">
-              <span>Preview state:</span>
-              <button
-                type="button"
-                onClick={() => setAiState("thinking")}
-                className={`rounded px-1.5 py-0.5 font-medium hover:bg-slate-100 ${aiState === "thinking" ? "text-indigo bg-indigo-soft" : ""}`}
-              >
-                Thinking
-              </button>
-              <span>·</span>
-              <button
-                type="button"
-                onClick={() => setAiState("result")}
-                className={`rounded px-1.5 py-0.5 font-medium hover:bg-slate-100 ${aiState === "result" ? "text-indigo bg-indigo-soft" : ""}`}
-              >
-                Success Result
-              </button>
-              <span>·</span>
-              <button
-                type="button"
-                onClick={() => setAiState("noData")}
-                className={`rounded px-1.5 py-0.5 font-medium hover:bg-slate-100 ${aiState === "noData" ? "text-indigo bg-indigo-soft" : ""}`}
-              >
-                No Data
               </button>
             </div>
 
@@ -1008,7 +1544,7 @@ function AddChartModal({ onClose, onPublish }) {
                 <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-soft text-indigo">
                   <IconSparkle width={16} />
                 </span>
-                <span className="text-sm font-medium text-ink-soft">AI is thinking...</span>
+                <span className="text-sm font-medium text-ink-soft">AI sedang merancang visualisasi...</span>
                 <span className="flex gap-1">
                   {[0, 1, 2].map((i) => (
                     <span
@@ -1024,9 +1560,15 @@ function AddChartModal({ onClose, onPublish }) {
             {aiState === "result" && (
               <div className="rounded-xl border border-line p-4">
                 <div className="mb-3 text-sm font-semibold text-ink">
-                  {aiResultChart?.title || "Revenue by Region"}
+                  {aiResultChart?.title || "Revenue Analysis"}
                 </div>
-                <BarChart data={series("12m")} color={SERIES[0]} />
+                <div className="h-48">
+                  {aiResultChart?.type === "combo" ? (
+                    <ComboChart data={aiResultChart?.data || series("12m")} />
+                  ) : (
+                    <BarChart data={aiResultChart?.data || series("12m")} color={SERIES[0]} />
+                  )}
+                </div>
                 <div className="mt-4 flex gap-2">
                   <Btn variant="outline" className="flex-1" onClick={runAi}>
                     <IconRefresh width={16} /> Regenerate
@@ -1035,14 +1577,17 @@ function AddChartModal({ onClose, onPublish }) {
                     className="flex-1"
                     onClick={() =>
                       onPublish({
-                        ...mk("bar", aiResultChart?.title || "Revenue by Region"),
-                        endpoint: aiResultChart?.endpoint || "/api/reports/region-revenue",
-                        dimension: aiResultChart?.dimension || "region",
-                        metric: aiResultChart?.metric || "revenue",
+                        ...mk(aiResultChart?.type || "bar", aiResultChart?.title || "Revenue Analysis"),
+                        w: aiResultChart?.type === "combo" ? 2 : 1,
+                        sql: aiResultChart?.sql,
+                        data: aiResultChart?.data,
+                        endpoint: aiResultChart?.endpoint,
+                        dimension: aiResultChart?.dimension,
+                        metric: aiResultChart?.metric,
                       })
                     }
                   >
-                    <IconPlus width={16} /> Add to Page
+                    <IconPlus width={16} /> Tambahkan ke Page
                   </Btn>
                 </div>
               </div>
@@ -1054,18 +1599,20 @@ function AddChartModal({ onClose, onPublish }) {
                 <div>
                   <div className="text-sm font-medium text-ink">Maaf, saya tidak menemukan data yang sesuai.</div>
                   <p className="mt-1 text-sm text-ink-soft">
-                    Data yang tersedia: <span className="font-medium text-ink">orders</span>,{" "}
-                    <span className="font-medium text-ink">sessions</span>,{" "}
-                    <span className="font-medium text-ink">subscriptions</span>,{" "}
-                    <span className="font-medium text-ink">revenue_by_region</span>,{" "}
-                    <span className="font-medium text-ink">sales_by_category</span>.
+                    Data mart yang tersedia: <span className="font-medium text-ink">fact_revenues</span>,{" "}
+                    <span className="font-medium text-ink">fact_targets</span>,{" "}
+                    <span className="font-medium text-ink">fact_drivers</span>,{" "}
+                    <span className="font-medium text-ink">dim_products</span>,{" "}
+                    <span className="font-medium text-ink">dim_locations</span>.
                   </p>
                 </div>
               </div>
             )}
 
             {aiState === "idle" && (
-              <p className="px-1 text-xs text-ink-faint">Tip: sebutkan sumber data (orders, sessions, subscriptions).</p>
+              <p className="px-1 text-xs text-ink-faint">
+                Tip: Sebutkan dimensi (kategori produk, wilayah, bulan) dan metrik yang ingin dianalisis.
+              </p>
             )}
           </div>
         )}
@@ -1074,12 +1621,172 @@ function AddChartModal({ onClose, onPublish }) {
   );
 }
 
-function PreviewChart({ type }) {
+// ---------------------------------------------------------------------------
+// Edit Chart Modal (Overlay with title, type, width & delete)
+// ---------------------------------------------------------------------------
+function EditChartModal({ chart, onClose, onSave, onDelete }) {
+  const [title, setTitle] = useState(chart.title || "");
+  const [subtitle, setSubtitle] = useState(chart.subtitle || "");
+  const [chartType, setChartType] = useState(chart.type || "bar");
+  const [chartWidth, setChartWidth] = useState(chart.w || 1);
+  const [error, setError] = useState("");
+
+  const handleSubmit = (e) => {
+    e?.preventDefault();
+    if (!title.trim()) {
+      setError("Judul chart wajib diisi");
+      return;
+    }
+    onSave({
+      ...chart,
+      title: title.trim(),
+      subtitle: subtitle.trim() || undefined,
+      type: chartType,
+      w: Number(chartWidth),
+    });
+    onClose();
+  };
+
+  const chartTypeOptions = [
+    { type: "bar", label: "Bar Chart" },
+    { type: "line", label: "Line Chart" },
+    { type: "combo", label: "Combo (Bar + Line)" },
+    { type: "area", label: "Area Chart" },
+    { type: "donut", label: "Donut Chart" },
+    { type: "stacked", label: "Stacked Bar" },
+    { type: "variance", label: "Variance YoY" },
+    { type: "gauge", label: "Gauge / KPI" },
+    { type: "heatmap", label: "Heatmap" },
+    { type: "geo", label: "Geo Map" },
+  ];
+
+  return (
+    <Overlay onClose={onClose}>
+      <div className="mx-auto w-full max-w-lg overflow-hidden rounded-2xl border border-line bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-line px-6 py-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-soft text-indigo">
+              <IconEdit width={16} />
+            </span>
+            <h2 className="text-base font-semibold text-ink">Edit Chart</h2>
+          </div>
+          <button onClick={onClose} className="rounded p-1 text-ink-faint hover:bg-slate-100">
+            <IconClose width={18} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <form onSubmit={handleSubmit} className="space-y-4 p-6">
+          <Field label="Judul Chart" error={error}>
+            <input
+              autoFocus
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (e.target.value.trim()) setError("");
+              }}
+              placeholder="Contoh: Pendapatan Broadband per Wilayah"
+              className={
+                error
+                  ? "w-full rounded-lg border border-rose bg-rose/5 px-3 py-2.5 text-sm outline-none ring-2 ring-rose/20 text-rose"
+                  : inputCls
+              }
+            />
+          </Field>
+
+          <Field label="Subjudul / Deskripsi (Opsional)">
+            <input
+              value={subtitle}
+              onChange={(e) => setSubtitle(e.target.value)}
+              placeholder="Contoh: Realisasi Q1 vs Q2 2024"
+              className={inputCls}
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Tipe Visualisasi">
+              <Select value={chartType} onChange={(e) => setChartType(e.target.value)}>
+                {chartTypeOptions.map((opt) => (
+                  <option key={opt.type} value={opt.type}>
+                    {opt.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field label="Ukuran Grid (Lebar Card)">
+              <Select value={chartWidth} onChange={(e) => setChartWidth(Number(e.target.value))}>
+                <option value={1}>1 Kolom (Standar / 50%)</option>
+                <option value={2}>2 Kolom (Full Width / 100%)</option>
+              </Select>
+            </Field>
+          </div>
+
+          {(chart.dimension || chart.metric || chart.sql) && (
+            <div className="rounded-xl border border-line bg-slate-50/70 p-3 text-xs text-ink-soft space-y-1">
+              <div className="font-semibold text-ink">Informasi Sumber Data:</div>
+              {chart.dimension && <div><span className="text-ink-faint">Dimensi:</span> {chart.dimension}</div>}
+              {chart.metric && <div><span className="text-ink-faint">Metrik:</span> {chart.metric}</div>}
+              {chart.sql && (
+                <div className="font-mono text-[11px] text-indigo bg-indigo-soft/40 p-2 rounded truncate">
+                  SQL: {chart.sql}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between border-t border-line pt-4 mt-6">
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm("Apakah Anda yakin ingin menghapus chart ini?")) {
+                  onDelete(chart.id);
+                  onClose();
+                }
+              }}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose hover:underline"
+            >
+              <IconTrash width={14} /> Hapus Chart
+            </button>
+            <div className="flex gap-2">
+              <Btn variant="outline" type="button" onClick={onClose}>
+                Batal
+              </Btn>
+              <Btn type="submit">
+                Simpan Perubahan
+              </Btn>
+            </div>
+          </div>
+        </form>
+      </div>
+    </Overlay>
+  );
+}
+
+function PreviewChart({ type, data }) {
   switch (type) {
+    case "combo":
+      return (
+        <ComboChart
+          data={
+            data && data.length > 0
+              ? data
+              : [
+                  { label: "Broadband Core", actual: 1250000000, target: 1200000000 },
+                  { label: "Acquisition", actual: 850000000, target: 900000000 },
+                  { label: "Digital Services", actual: 450000000, target: 400000000 },
+                  { label: "Voice & Legacy", actual: 300000000, target: 350000000 },
+                ]
+          }
+        />
+      );
     case "line":
-      return <LineChart data={series("12m")} />;
+      return <LineChart data={data && data.length > 0 ? data : series("12m")} />;
     case "donut":
-      return <DonutChart data={donutData} />;
+      return <DonutChart data={data && data.length > 0 ? data : donutData} />;
+    case "area":
+      return <LineChart data={data && data.length > 0 ? data : series("12m")} color={SERIES[4]} area />;
     case "summary":
       return (
         <div className="flex flex-col justify-center gap-3 py-2">
@@ -1104,7 +1811,7 @@ function PreviewChart({ type }) {
         </div>
       );
     default:
-      return <BarChart data={series("12m")} />;
+      return <BarChart data={data && data.length > 0 ? data : series("12m")} />;
   }
 }
 
@@ -1705,6 +2412,8 @@ export default function App() {
   const [byokOpen, setByokOpen] = useState(false);
   const [manageUsersOpen, setManageUsersOpen] = useState(false);
   const [saved, setSaved] = useState(true);
+  const [editingChart, setEditingChart] = useState(null);
+  const [draggedChartIndex, setDraggedChartIndex] = useState(null);
   const [toasts, setToasts] = useState([]);
   const range = "12m";
 
@@ -1836,17 +2545,42 @@ export default function App() {
   };
 
   const editChart = (chart) => {
-    const newTitle = prompt("Masukkan judul baru untuk chart:", chart.title);
-    if (newTitle && newTitle.trim()) {
-      const newCharts = (active.charts || []).map((c) =>
-        c.id === chart.id ? { ...c, title: newTitle.trim() } : c
-      );
-      setPages((prev) =>
-        prev.map((p) => (p.id === active.id ? { ...p, charts: newCharts } : p))
-      );
-      persistCharts(active.id, newCharts);
-      pushToast("emerald", "Chart berhasil diperbarui");
-    }
+    setEditingChart(chart);
+  };
+
+  const handleSaveChartEdit = (updatedChart) => {
+    const newCharts = (active.charts || []).map((c) =>
+      c.id === updatedChart.id ? updatedChart : c
+    );
+    setPages((prev) =>
+      prev.map((p) => (p.id === active.id ? { ...p, charts: newCharts } : p))
+    );
+    persistCharts(active.id, newCharts);
+    pushToast("emerald", "Chart berhasil diperbarui");
+  };
+
+  const handleToggleChartWidth = (chart) => {
+    const newWidth = chart.w === 2 ? 1 : 2;
+    const newCharts = (active.charts || []).map((c) =>
+      c.id === chart.id ? { ...c, w: newWidth } : c
+    );
+    setPages((prev) =>
+      prev.map((p) => (p.id === active.id ? { ...p, charts: newCharts } : p))
+    );
+    persistCharts(active.id, newCharts);
+    pushToast("indigo", `Ukuran chart diubah ke ${newWidth} kolom`);
+  };
+
+  const handleReorderCharts = (fromIdx, toIdx) => {
+    if (fromIdx === null || toIdx === null || fromIdx === toIdx) return;
+    const currentCharts = [...(active.charts || [])];
+    const item = currentCharts.splice(fromIdx, 1)[0];
+    currentCharts.splice(toIdx, 0, item);
+    setPages((prev) =>
+      prev.map((p) => (p.id === active.id ? { ...p, charts: currentCharts } : p))
+    );
+    persistCharts(active.id, currentCharts);
+    pushToast("indigo", "Urutan chart berhasil dipindahkan");
   };
 
   if (!authed) return <LoginScreen onLogin={handleLoginSuccess} onToast={pushToast} />;
@@ -2111,14 +2845,31 @@ export default function App() {
               </div>
 
               <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-                {active.charts.map((c) => (
+                {active.charts.map((c, idx) => (
                   <ChartCard
-                    key={c.id}
+                    key={c.id || idx}
+                    index={idx}
                     chart={c}
                     range={range}
                     onDelete={() => deleteChart(c.id)}
                     onDuplicate={() => duplicateChart(c)}
                     onEdit={() => editChart(c)}
+                    onToggleWidth={() => handleToggleChartWidth(c)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/plain", String(idx));
+                      setDraggedChartIndex(idx);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleReorderCharts(draggedChartIndex, idx);
+                      setDraggedChartIndex(null);
+                    }}
+                    onDragEnd={() => setDraggedChartIndex(null)}
+                    isDragging={draggedChartIndex === idx}
                   />
                 ))}
               </div>
@@ -2135,6 +2886,16 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Edit Chart Modal */}
+      {editingChart && (
+        <EditChartModal
+          chart={editingChart}
+          onClose={() => setEditingChart(null)}
+          onSave={handleSaveChartEdit}
+          onDelete={deleteChart}
+        />
+      )}
 
       {/* 4-8. Modal Add Chart */}
       {addOpen && (
