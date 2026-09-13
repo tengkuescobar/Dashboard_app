@@ -10,20 +10,6 @@ class PageController extends Controller
     public function index(Request $request)
     {
         $pages = Page::orderBy('order')->get();
-        $user = $request->user();
-
-        // If user is a viewer, strip out draft charts
-        if ($user && $user->role === 'viewer') {
-            $pages->transform(function ($page) {
-                if (is_array($page->charts)) {
-                    $page->charts = array_values(array_filter($page->charts, function ($chart) {
-                        return !isset($chart['status']) || $chart['status'] !== 'draft';
-                    }));
-                }
-                return $page;
-            });
-        }
-
         return response()->json($pages);
     }
 

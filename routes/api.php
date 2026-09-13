@@ -29,4 +29,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // User Settings (Phase 10)
     Route::post('/user/llm-key', [App\Http\Controllers\UserSettingsController::class, 'updateLlmKey']);
+
+    // Admin User Management
+    Route::get('/admin/users', [App\Http\Controllers\UserController::class, 'index']);
+    Route::post('/admin/users', [App\Http\Controllers\UserController::class, 'store']);
+    Route::put('/admin/users/{user}', [App\Http\Controllers\UserController::class, 'update']);
+    Route::delete('/admin/users/{user}', [App\Http\Controllers\UserController::class, 'destroy']);
 });

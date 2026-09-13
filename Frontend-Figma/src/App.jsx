@@ -68,6 +68,10 @@ import {
   getQueryCatalog,
   askAiGenerateChart,
   saveLlmApiKey,
+  getUsers,
+  createUser,
+  updateUser,
+  deleteUser,
   getAuthToken,
   getStoredUser,
 } from "./api";
@@ -1210,6 +1214,297 @@ function ByokModal({ onClose, onSaved }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Admin User Management Modal
+// ---------------------------------------------------------------------------
+function UserManagementModal({ onClose, currentUserId, onToast }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("member");
+  const [saving, setSaving] = useState(false);
+  const [formErr, setFormErr] = useState("");
+
+  const loadUsers = async () => {
+    setLoading(true);
+    try {
+      const data = await getUsers();
+      setUsers(data || []);
+    } catch (err) {
+      console.error(err);
+      onToast("rose", "Gagal memuat daftar user");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  const openAddForm = () => {
+    setEditingUser(null);
+    setName("");
+    setEmail("");
+    setPassword("");
+    setRole("member");
+    setFormErr("");
+    setFormOpen(true);
+  };
+
+  const openEditForm = (u) => {
+    setEditingUser(u);
+    setName(u.name);
+    setEmail(u.email);
+    setPassword("");
+    setRole(u.role || "member");
+    setFormErr("");
+    setFormOpen(true);
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || !email.trim()) {
+      setFormErr("Nama dan Email wajib diisi.");
+      return;
+    }
+    if (!editingUser && !password.trim()) {
+      setFormErr("Password wajib diisi untuk user baru.");
+      return;
+    }
+    setSaving(true);
+    setFormErr("");
+    try {
+      if (editingUser) {
+        const payload = { name: name.trim(), email: email.trim(), role };
+        if (password.trim()) payload.password = password.trim();
+        await updateUser(editingUser.id, payload);
+        onToast("emerald", "User berhasil diperbarui");
+      } else {
+        await createUser({ name: name.trim(), email: email.trim(), password: password.trim(), role });
+        onToast("emerald", "User baru berhasil ditambahkan");
+      }
+      setFormOpen(false);
+      loadUsers();
+    } catch (err) {
+      console.error(err);
+      setFormErr(err.message || "Gagal menyimpan user");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (u) => {
+    if (u.id === currentUserId) {
+      onToast("rose", "Tidak dapat menghapus akun Anda sendiri");
+      return;
+    }
+    if (!confirm(`Hapus user "${u.name}" (${u.email})?`)) return;
+    try {
+      await deleteUser(u.id);
+      onToast("emerald", "User berhasil dihapus");
+      loadUsers();
+    } catch (err) {
+      console.error(err);
+      onToast("rose", "Gagal menghapus user");
+    }
+  };
+
+  return (
+    <Overlay onClose={onClose}>
+      <div className="mx-auto w-full max-w-2xl overflow-hidden rounded-2xl border border-line bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-line px-6 py-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-soft text-indigo">
+              <IconUsers width={20} />
+            </span>
+            <div>
+              <h3 className="text-base font-semibold text-ink">User Management</h3>
+              <p className="text-xs text-ink-faint">Kelola data pengguna sistem dan hak akses akun</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {!formOpen && (
+              <Btn onClick={openAddForm} className="text-xs py-1.5 px-3">
+                <IconPlus width={15} /> Tambah User
+              </Btn>
+            )}
+            <button onClick={onClose} className="rounded p-1 text-ink-faint hover:bg-slate-100">
+              <IconClose width={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="p-6">
+          {formOpen ? (
+            <form onSubmit={handleSave} className="space-y-4 rounded-xl border border-line bg-slate-50/50 p-5">
+              <div className="flex items-center justify-between border-b border-line pb-3">
+                <span className="text-sm font-semibold text-ink">
+                  {editingUser ? `Edit User: ${editingUser.name}` : "Tambah User Baru"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFormOpen(false)}
+                  className="text-xs text-ink-faint hover:text-ink"
+                >
+                  Batal
+                </button>
+              </div>
+
+              {formErr && (
+                <div className="rounded-lg border border-rose/30 bg-rose/5 p-3 text-xs text-rose font-medium">
+                  {formErr}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Nama Lengkap">
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. John Doe"
+                    className={inputCls}
+                    required
+                  />
+                </Field>
+                <Field label="Email">
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="user@northstar.io"
+                    className={inputCls}
+                    required
+                  />
+                </Field>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field label={editingUser ? "Password Baru (Opsional)" : "Password"}>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={editingUser ? "Kosongkan jika tidak diubah" : "Minimal 6 karakter"}
+                    className={inputCls}
+                    minLength={editingUser ? undefined : 6}
+                    required={!editingUser}
+                  />
+                </Field>
+                <Field label="Role">
+                  <Select value={role} onChange={(e) => setRole(e.target.value)}>
+                    <option value="member">Member (Akses Dashboard &amp; Chart)</option>
+                    <option value="admin">Admin (Akses Penuh + Kelola User)</option>
+                  </Select>
+                </Field>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-line">
+                <Btn variant="outline" type="button" onClick={() => setFormOpen(false)}>
+                  Batal
+                </Btn>
+                <Btn type="submit" disabled={saving}>
+                  {saving ? "Menyimpan..." : "Simpan User"}
+                </Btn>
+              </div>
+            </form>
+          ) : loading ? (
+            <div className="flex flex-col gap-2 py-8">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="shimmer h-12 w-full rounded-lg bg-slate-100" />
+              ))}
+            </div>
+          ) : users.length === 0 ? (
+            <div className="py-12 text-center text-sm text-ink-faint">Belum ada user terdaftar.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-line text-xs font-semibold uppercase tracking-wider text-ink-faint">
+                    <th className="pb-3 pl-2">User</th>
+                    <th className="pb-3">Email</th>
+                    <th className="pb-3">Role</th>
+                    <th className="pb-3 pr-2 text-right">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {users.map((u) => {
+                    const isAdmin = u.role === "admin";
+                    const isSelf = u.id === currentUserId;
+                    return (
+                      <tr key={u.id} className="group hover:bg-slate-50/60 transition-colors">
+                        <td className="py-3 pl-2">
+                          <div className="flex items-center gap-2.5">
+                            <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold ${
+                              isAdmin ? "bg-indigo text-white shadow-sm" : "bg-slate-200 text-ink-soft"
+                            }`}>
+                              {initials(u.name)}
+                            </span>
+                            <div>
+                              <div className="font-medium text-ink flex items-center gap-1.5">
+                                {u.name}
+                                {isSelf && (
+                                  <span className="rounded bg-indigo-soft px-1.5 py-0.2 text-[10px] font-semibold text-indigo">
+                                    Anda
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 text-ink-soft font-mono text-xs">{u.email}</td>
+                        <td className="py-3">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              isAdmin
+                                ? "bg-indigo-soft text-indigo ring-1 ring-indigo/20 font-semibold"
+                                : "bg-slate-100 text-ink-soft"
+                            }`}
+                          >
+                            {isAdmin ? "Admin" : "Member"}
+                          </span>
+                        </td>
+                        <td className="py-3 pr-2 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditForm(u)}
+                              className="rounded p-1 text-ink-faint hover:bg-slate-100 hover:text-indigo"
+                              title="Edit user"
+                            >
+                              <IconEdit width={15} />
+                            </button>
+                            {!isSelf && (
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(u)}
+                                className="rounded p-1 text-ink-faint hover:bg-rose/10 hover:text-rose"
+                                title="Hapus user"
+                              >
+                                <IconTrash width={15} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
 function initials(name) {
   return name.trim().split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("") || "?";
 }
@@ -1408,6 +1703,7 @@ export default function App() {
   const [addOpen, setAddOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const [byokOpen, setByokOpen] = useState(false);
+  const [manageUsersOpen, setManageUsersOpen] = useState(false);
   const [saved, setSaved] = useState(true);
   const [toasts, setToasts] = useState([]);
   const range = "12m";
@@ -1721,6 +2017,18 @@ export default function App() {
                   >
                     <IconSparkle width={15} className="text-indigo" /> BYOK (LLM API Key)
                   </button>
+                  {currentUser?.role === "admin" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserMenu(false);
+                        setManageUsersOpen(true);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-ink-soft hover:bg-slate-50"
+                    >
+                      <IconUsers width={15} className="text-indigo" /> User Management
+                    </button>
+                  )}
                   <div className="h-px bg-line" />
                   <button
                     type="button"
@@ -1855,6 +2163,15 @@ export default function App() {
         <ByokModal
           onClose={() => setByokOpen(false)}
           onSaved={(tone, msg) => pushToast(tone, msg)}
+        />
+      )}
+
+      {/* Admin: User Management Modal */}
+      {manageUsersOpen && (
+        <UserManagementModal
+          onClose={() => setManageUsersOpen(false)}
+          currentUserId={currentUser?.id}
+          onToast={(tone, msg) => pushToast(tone, msg)}
         />
       )}
 

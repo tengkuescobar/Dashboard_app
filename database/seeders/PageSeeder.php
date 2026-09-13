@@ -11,13 +11,23 @@ class PageSeeder extends Seeder
 {
     public function run(): void
     {
-        // Ensure default user Ayu Rahma exists
+        // Ensure default admin user Ayu Rahma exists
         User::updateOrCreate(
             ['email' => 'ayu@northstar.io'],
             [
                 'name' => 'Ayu Rahma',
                 'password' => Hash::make('password'),
                 'role' => 'admin',
+            ]
+        );
+
+        // Ensure default regular member user Budi Santoso exists
+        User::updateOrCreate(
+            ['email' => 'budi@northstar.io'],
+            [
+                'name' => 'Budi Santoso',
+                'password' => Hash::make('password'),
+                'role' => 'member',
             ]
         );
 

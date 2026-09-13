@@ -134,3 +134,28 @@ export async function saveLlmApiKey(llm_api_key) {
     body: JSON.stringify({ llm_api_key }),
   });
 }
+
+export async function getUsers() {
+  return apiRequest('/admin/users');
+}
+
+export async function createUser(payload) {
+  return apiRequest('/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateUser(id, payload) {
+  return apiRequest(`/admin/users/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteUser(id) {
+  return apiRequest(`/admin/users/${id}`, {
+    method: 'DELETE',
+  });
+}
+
