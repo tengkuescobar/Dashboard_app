@@ -63,6 +63,7 @@ import {
   createPage as apiCreatePage,
   updatePage as apiUpdatePage,
   deletePage as apiDeletePage,
+  reorderPages as apiReorderPages,
   fetchReportData,
   getQueryCatalog,
   askAiGenerateChart,
@@ -1554,7 +1555,24 @@ export default function App() {
 
   if (!authed) return <LoginScreen onLogin={handleLoginSuccess} onToast={pushToast} />;
 
-  const renderPageRow = (p) => {
+  const movePage = async (index, dir) => {
+    const targetIdx = index + dir;
+    if (targetIdx < 0 || targetIdx >= pages.length) return;
+    const next = [...pages];
+    const temp = next[index];
+    next[index] = next[targetIdx];
+    next[targetIdx] = temp;
+    setPages(next);
+    setPageMenu(null);
+    try {
+      await apiReorderPages(next);
+      pushToast("indigo", "Urutan halaman diperbarui");
+    } catch (err) {
+      console.error("Reorder failed:", err);
+    }
+  };
+
+  const renderPageRow = (p, index) => {
     const Icon = ICONS[p.icon] ?? IconChart;
     const isActive = p.id === active.id;
     return (
@@ -1593,7 +1611,7 @@ export default function App() {
         {pageMenu === p.id && (
           <>
             <div className="fixed inset-0 z-10" onClick={(e) => { e.stopPropagation(); setPageMenu(null); }} />
-            <div className="absolute right-1 top-9 z-20 w-32 overflow-hidden rounded-lg border border-line bg-white py-1 text-sm shadow-lg">
+            <div className="absolute right-1 top-9 z-20 w-36 overflow-hidden rounded-lg border border-line bg-white py-1 text-sm shadow-lg">
               <button
                 type="button"
                 onClick={(e) => {
@@ -1605,6 +1623,31 @@ export default function App() {
               >
                 <IconEdit width={14} /> Rename
               </button>
+              {index > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    movePage(index, -1);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-ink-soft hover:bg-slate-50"
+                >
+                  <IconChevronDown width={14} className="rotate-180 text-ink-faint" /> Move Up
+                </button>
+              )}
+              {index < pages.length - 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    movePage(index, 1);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-ink-soft hover:bg-slate-50"
+                >
+                  <IconChevronDown width={14} className="text-ink-faint" /> Move Down
+                </button>
+              )}
+              <div className="my-1 h-px bg-line" />
               <button
                 type="button"
                 onClick={(e) => {
@@ -1713,7 +1756,7 @@ export default function App() {
             </div>
           ) : (
             <div className="flex flex-col gap-1 overflow-y-auto">
-              {pages.map((p) => renderPageRow(p))}
+              {pages.map((p, idx) => renderPageRow(p, idx))}
             </div>
           )}
         </aside>
