@@ -55,6 +55,20 @@ import {
   stackedKeys,
   varianceData,
 } from "./data";
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  getPages as apiGetPages,
+  createPage as apiCreatePage,
+  updatePage as apiUpdatePage,
+  deletePage as apiDeletePage,
+  fetchReportData,
+  getQueryCatalog,
+  askAiGenerateChart,
+  saveLlmApiKey,
+  getAuthToken,
+  getStoredUser,
+} from "./api";
 
 // ---------------------------------------------------------------------------
 // Icon registry (page icons are stored as a string key so they stay swappable)
@@ -106,20 +120,50 @@ const mk = (type, title, broken) => ({
   broken,
 });
 
-const rawSeedPages = [
+const defaultSeedPages = [
   {
-    id: "p1",
+    id: 1,
     name: "Sales Overview",
     icon: "chart",
     charts: [
-      mk("bar", "Revenue by Month"),
-      mk("line", "Weekly Signups"),
-      mk("donut", "Traffic Sources"),
-      mk("summary", "Performance Summary"),
+      {
+        id: "c1",
+        type: "bar",
+        title: "Revenue by Region",
+        endpoint: "/api/reports/region-revenue",
+        dimension: "region",
+        metric: "revenue",
+        w: 1,
+        h: 1,
+      },
+      {
+        id: "c2",
+        type: "donut",
+        title: "Sales by Category",
+        endpoint: "/api/reports/category-summary",
+        dimension: "category",
+        metric: "quantity",
+        w: 1,
+        h: 1,
+      },
+      {
+        id: "c3",
+        type: "line",
+        title: "Weekly Signups",
+        w: 1,
+        h: 1,
+      },
+      {
+        id: "c4",
+        type: "summary",
+        title: "Performance Summary",
+        w: 1,
+        h: 1,
+      },
     ],
   },
   {
-    id: "p2",
+    id: 2,
     name: "Marketing Report",
     icon: "line",
     charts: [
@@ -129,20 +173,19 @@ const rawSeedPages = [
     ],
   },
   {
-    id: "p3",
+    id: 3,
     name: "Product Analytics",
     icon: "grid",
     charts: [], // Empty state (2b)
   },
   {
-    id: "p4",
+    id: 4,
     name: "Interactive States (3b)",
     icon: "donut",
     charts: [],
     isInteractiveDemo: true,
   },
 ];
-const seedPages = rawSeedPages;
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -204,11 +247,71 @@ function Select({ children, ...props }) {
 }
 
 // ---------------------------------------------------------------------------
-// Chart renderer
+// Chart renderer with real API support & spec states
 // ---------------------------------------------------------------------------
 function ChartBody({ chart, range }) {
-  const [state, setState] = useState("ok");
+  const [state, setState] = useState(chart.endpoint ? "loading" : "ok");
   const [errored, setErrored] = useState(!!chart.broken);
+  const [apiData, setApiData] = useState(null);
+
+  useEffect(() => {
+    if (!chart.endpoint) {
+      setState("ok");
+      return;
+    }
+    let active = true;
+    setState("loading");
+    setErrored(false);
+
+    fetchReportData(chart.endpoint)
+      .then((res) => {
+        if (!active) return;
+        const raw = res?.data || [];
+        const dim = chart.dimension || "region";
+        const met = chart.metric || "revenue";
+        const formatted = raw.map((item) => ({
+          label: String(item[dim] || item.label || Object.keys(item)[0] || "Unknown"),
+          value: Number(item[met] || item.value || Object.values(item)[1] || 0),
+        }));
+        setApiData(formatted);
+        setState("ok");
+      })
+      .catch((err) => {
+        if (!active) return;
+        console.error("Failed to load chart data:", err);
+        setErrored(true);
+        setState("error");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chart.endpoint, chart.dimension, chart.metric]);
+
+  const handleRetry = () => {
+    setErrored(false);
+    setState("loading");
+    if (chart.endpoint) {
+      fetchReportData(chart.endpoint)
+        .then((res) => {
+          const raw = res?.data || [];
+          const dim = chart.dimension || "region";
+          const met = chart.metric || "revenue";
+          const formatted = raw.map((item) => ({
+            label: String(item[dim] || item.label || "Unknown"),
+            value: Number(item[met] || item.value || 0),
+          }));
+          setApiData(formatted);
+          setState("ok");
+        })
+        .catch(() => {
+          setErrored(true);
+          setState("error");
+        });
+    } else {
+      setTimeout(() => setState("ok"), 1000);
+    }
+  };
 
   if (errored) {
     return (
@@ -220,17 +323,14 @@ function ChartBody({ chart, range }) {
         <Btn
           variant="outline"
           className="mt-1 px-3 py-1.5 text-xs"
-          onClick={() => {
-            setErrored(false);
-            setState("loading");
-            setTimeout(() => setState("ok"), 1100);
-          }}
+          onClick={handleRetry}
         >
           <IconRefresh width={14} /> Coba Lagi
         </Btn>
       </div>
     );
   }
+
   if (state === "loading") {
     return (
       <div className="flex flex-1 items-end gap-2 px-1 py-4">
@@ -240,7 +340,9 @@ function ChartBody({ chart, range }) {
       </div>
     );
   }
-  const s = series(range);
+
+  const s = apiData && apiData.length > 0 ? apiData : series(range);
+
   switch (chart.type) {
     case "bar":
       return <BarChart data={s} />;
@@ -253,7 +355,7 @@ function ChartBody({ chart, range }) {
     case "variance":
       return <VarianceBar data={varianceData} />;
     case "donut":
-      return <DonutChart data={donutData} />;
+      return <DonutChart data={apiData && apiData.length > 0 ? apiData : donutData} />;
     case "geo":
       return <GeoChart tiles={geoTiles} />;
     case "heatmap":
@@ -417,8 +519,19 @@ function AddChartModal({ onClose, onPublish }) {
   const [publishing, setPublishing] = useState(false);
   const [ai, setAi] = useState("");
   const [aiState, setAiState] = useState("idle");
+  const [aiResultChart, setAiResultChart] = useState(null);
+  const [catalog, setCatalog] = useState([]);
+  const [selectedCatalogQuery, setSelectedCatalogQuery] = useState("revenue_by_region");
 
   const isCustom = type === "summary";
+
+  useEffect(() => {
+    getQueryCatalog()
+      .then((res) => {
+        if (res?.queries) setCatalog(res.queries);
+      })
+      .catch((err) => console.error("Could not fetch query catalog:", err));
+  }, []);
 
   const getStepTitle = () => {
     if (step === 0) return "Add Chart";
@@ -436,17 +549,34 @@ function AddChartModal({ onClose, onPublish }) {
 
   const publish = () => {
     setPublishing(true);
+    const chosenQuery = catalog.find((q) => q.id === selectedCatalogQuery);
     setTimeout(() => {
-      onPublish({ ...mk(type, title.trim() || typeMeta[type].label) });
-    }, 1000);
+      onPublish({
+        ...mk(type, title.trim() || typeMeta[type].label),
+        endpoint: chosenQuery?.endpoint || (selectedCatalogQuery === "revenue_by_region" ? "/api/reports/region-revenue" : "/api/reports/category-summary"),
+        dimension: chosenQuery?.response_fields?.dimension || (selectedCatalogQuery === "revenue_by_region" ? "region" : "category"),
+        metric: chosenQuery?.response_fields?.metric || (selectedCatalogQuery === "revenue_by_region" ? "revenue" : "quantity"),
+      });
+      setPublishing(false);
+    }, 600);
   };
 
-  const runAi = () => {
+  const runAi = async () => {
     if (!ai.trim()) return;
     setAiState("thinking");
-    setTimeout(() => {
-      setAiState(/revenue|region|sales|bar|line|trend|source|country|geo/i.test(ai) ? "result" : "noData");
-    }, 1400);
+    try {
+      const res = await askAiGenerateChart(ai.trim());
+      if (res?.no_data) {
+        setAiState("noData");
+      } else if (res?.chart) {
+        setAiResultChart(res.chart);
+        setAiState("result");
+      } else {
+        setAiState("result");
+      }
+    } catch {
+      setAiState("noData");
+    }
   };
 
   return (
@@ -555,15 +685,20 @@ function AddChartModal({ onClose, onPublish }) {
                 </Field>
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="Data Source">
-                    <Select defaultValue="orders">
-                      <option value="orders">Orders (BigQuery)</option>
-                      <option value="sessions">Sessions</option>
-                      <option value="subscriptions">Subscriptions</option>
+                    <Select
+                      value={selectedCatalogQuery}
+                      onChange={(e) => setSelectedCatalogQuery(e.target.value)}
+                    >
+                      <option value="revenue_by_region">Revenue by Region (BigQuery)</option>
+                      <option value="sales_by_category">Sales by Category (Orders)</option>
+                      <option value="sessions">Web Sessions</option>
+                      <option value="subscriptions">Customer Subscriptions</option>
                     </Select>
                   </Field>
                   <Field label="Dimension">
                     <Select defaultValue="region">
                       <option value="region">Region</option>
+                      <option value="category">Category</option>
                       <option value="month">Month</option>
                       <option value="channel">Channel</option>
                     </Select>
@@ -572,6 +707,7 @@ function AddChartModal({ onClose, onPublish }) {
                 <Field label="Metric">
                   <Select defaultValue="revenue">
                     <option value="revenue">Sum of Revenue</option>
+                    <option value="quantity">Total Quantity</option>
                     <option value="orders">Count of Orders</option>
                     <option value="aov">Avg Order Value</option>
                   </Select>
@@ -754,13 +890,25 @@ function AddChartModal({ onClose, onPublish }) {
 
             {aiState === "result" && (
               <div className="rounded-xl border border-line p-4">
-                <div className="mb-3 text-sm font-semibold text-ink">Revenue by Region</div>
+                <div className="mb-3 text-sm font-semibold text-ink">
+                  {aiResultChart?.title || "Revenue by Region"}
+                </div>
                 <BarChart data={series("12m")} color={SERIES[0]} />
                 <div className="mt-4 flex gap-2">
                   <Btn variant="outline" className="flex-1" onClick={runAi}>
                     <IconRefresh width={16} /> Regenerate
                   </Btn>
-                  <Btn className="flex-1" onClick={() => onPublish(mk("bar", "Revenue by Region"))}>
+                  <Btn
+                    className="flex-1"
+                    onClick={() =>
+                      onPublish({
+                        ...mk("bar", aiResultChart?.title || "Revenue by Region"),
+                        endpoint: aiResultChart?.endpoint || "/api/reports/region-revenue",
+                        dimension: aiResultChart?.dimension || "region",
+                        metric: aiResultChart?.metric || "revenue",
+                      })
+                    }
+                  >
                     <IconPlus width={16} /> Add to Page
                   </Btn>
                 </div>
@@ -775,7 +923,9 @@ function AddChartModal({ onClose, onPublish }) {
                   <p className="mt-1 text-sm text-ink-soft">
                     Data yang tersedia: <span className="font-medium text-ink">orders</span>,{" "}
                     <span className="font-medium text-ink">sessions</span>,{" "}
-                    <span className="font-medium text-ink">subscriptions</span>.
+                    <span className="font-medium text-ink">subscriptions</span>,{" "}
+                    <span className="font-medium text-ink">revenue_by_region</span>,{" "}
+                    <span className="font-medium text-ink">sales_by_category</span>.
                   </p>
                 </div>
               </div>
@@ -859,6 +1009,73 @@ function ConfirmDelete({ title, body, onCancel, onConfirm }) {
             Hapus
           </Btn>
         </div>
+      </div>
+    </Overlay>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BYOK (Bring Your Own Key) Modal (Fase 3)
+// ---------------------------------------------------------------------------
+function ByokModal({ onClose, onSaved }) {
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await saveLlmApiKey(apiKey.trim());
+      onSaved("emerald", "LLM API Key berhasil disimpan dan terenkripsi!");
+      onClose();
+    } catch (err) {
+      console.error(err);
+      onSaved("rose", "Gagal menyimpan LLM API Key");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Overlay onClose={onClose}>
+      <div className="mx-auto w-full max-w-md overflow-hidden rounded-2xl border border-line bg-white p-6 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-line pb-3">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-soft text-indigo">
+              <IconSparkle width={18} />
+            </span>
+            <h3 className="text-base font-semibold text-ink">Bring Your Own Key (BYOK)</h3>
+          </div>
+          <button onClick={onClose} className="rounded p-1 text-ink-faint hover:bg-slate-100">
+            <IconClose width={18} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSave} className="mt-4 space-y-4">
+          <p className="text-xs text-ink-soft">
+            Masukkan Google Gemini API Key Anda. Kunci akan dienkripsi dengan aman di database menggunakan Laravel{" "}
+            <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-indigo">Crypt::encryptString</code>.
+          </p>
+
+          <Field label="Gemini API Key">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="AIzaSy..."
+              className={inputCls}
+            />
+          </Field>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Btn variant="outline" type="button" onClick={onClose}>
+              Batal
+            </Btn>
+            <Btn type="submit" disabled={saving}>
+              {saving ? "Menyimpan..." : "Simpan Key"}
+            </Btn>
+          </div>
+        </form>
       </div>
     </Overlay>
   );
@@ -1051,20 +1268,20 @@ function InteractiveStatesView({ onTriggerToast }) {
 // Main Application (Page Manager, Canvas, Dialogs, Header)
 // ---------------------------------------------------------------------------
 export default function App() {
-  const [authed, setAuthed] = useState(false);
+  const [authed, setAuthed] = useState(() => !!getAuthToken());
+  const [currentUser, setCurrentUser] = useState(() => getStoredUser() || { name: "Ayu Rahma", email: "ayu@northstar.io" });
   const [booting, setBooting] = useState(false);
-  const [pages, setPages] = useState(() => seedPages);
-  const [activeId, setActiveId] = useState("p1");
+  const [pages, setPages] = useState(() => defaultSeedPages);
+  const [activeId, setActiveId] = useState(1);
   const [pageMenu, setPageMenu] = useState(null);
   const [renaming, setRenaming] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
+  const [byokOpen, setByokOpen] = useState(false);
   const [saved, setSaved] = useState(true);
   const [toasts, setToasts] = useState([]);
   const range = "12m";
-
-  const active = pages.find((p) => p.id === activeId) ?? pages[0];
 
   const pushToast = (tone, text) => {
     const id = uid();
@@ -1073,56 +1290,118 @@ export default function App() {
   };
   const dismiss = (id) => setToasts((t) => t.filter((x) => x.id !== id));
 
-  // Autosave indicator flicker
-  const firstRun = useRef(true);
-  useEffect(() => {
-    if (firstRun.current) {
-      firstRun.current = false;
-      return;
+  // Load pages from Laravel backend API
+  const loadPages = async () => {
+    try {
+      setBooting(true);
+      const res = await apiGetPages();
+      if (Array.isArray(res) && res.length > 0) {
+        setPages(res);
+        setActiveId(res[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to load pages from API, using defaults:", err);
+    } finally {
+      setBooting(false);
     }
-    setSaved(false);
-    const t = setTimeout(() => setSaved(true), 600);
-    return () => clearTimeout(t);
-  }, [pages]);
+  };
 
-  const login = () => {
+  useEffect(() => {
+    if (authed) {
+      loadPages();
+    }
+  }, [authed]);
+
+  const active = pages.find((p) => p.id === activeId) ?? pages[0] ?? defaultSeedPages[0];
+
+  const handleLoginSuccess = (user) => {
     setBooting(true);
     setAuthed(true);
-    setTimeout(() => setBooting(false), 900);
+    if (user) setCurrentUser(user);
+    loadPages();
+    setTimeout(() => setBooting(false), 800);
   };
 
-  const addPage = () => {
-    const p = { id: uid(), name: "Untitled Page", icon: "chart", charts: [] };
-    setPages((prev) => [...prev, p]);
-    setActiveId(p.id);
-    setRenaming(p.id);
+  const handleLogout = async () => {
+    try {
+      await apiLogout();
+    } catch {
+      // Ignore
+    }
+    setAuthed(false);
+    setUserMenu(false);
   };
 
-  const doDelete = () => {
+  const addPage = async () => {
+    try {
+      const res = await apiCreatePage("Untitled Page");
+      setPages((prev) => [...prev, res]);
+      setActiveId(res.id);
+      setRenaming(res.id);
+      pushToast("emerald", "Page berhasil dibuat");
+    } catch (err) {
+      console.error(err);
+      const p = { id: uid(), name: "Untitled Page", icon: "chart", charts: [] };
+      setPages((prev) => [...prev, p]);
+      setActiveId(p.id);
+      setRenaming(p.id);
+    }
+  };
+
+  const savePageRename = async (id, newName) => {
+    setRenaming(null);
+    setPages((prev) => prev.map((x) => (x.id === id ? { ...x, name: newName || x.name } : x)));
+    try {
+      await apiUpdatePage(id, { name: newName });
+      pushToast("emerald", "Page berhasil di-rename");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const doDelete = async () => {
     if (!confirmDel) return;
-    setPages((prev) => prev.filter((p) => p.id !== confirmDel.id));
-    const remaining = pages.filter((p) => p.id !== confirmDel.id);
-    if (activeId === confirmDel.id && remaining[0]) {
+    const targetId = confirmDel.id;
+    setPages((prev) => prev.filter((p) => p.id !== targetId));
+    const remaining = pages.filter((p) => p.id !== targetId);
+    if (activeId === targetId && remaining[0]) {
       setActiveId(remaining[0].id);
     }
-    pushToast("rose", "Page dihapus");
     setConfirmDel(null);
+    try {
+      await apiDeletePage(targetId);
+      pushToast("rose", "Page dihapus");
+    } catch (err) {
+      console.error(err);
+      pushToast("rose", "Gagal menghapus page di server");
+    }
+  };
+
+  const persistCharts = async (pageId, newCharts) => {
+    setSaved(false);
+    try {
+      await apiUpdatePage(pageId, { charts: newCharts });
+      setSaved(true);
+    } catch (err) {
+      console.error("Autosave error:", err);
+      setSaved(true);
+    }
   };
 
   const addChart = (chart) => {
+    const newCharts = [...(active.charts || []), chart];
     setPages((prev) =>
-      prev.map((p) =>
-        p.id === active.id ? { ...p, charts: [...p.charts, chart] } : p
-      )
+      prev.map((p) => (p.id === active.id ? { ...p, charts: newCharts } : p))
     );
+    persistCharts(active.id, newCharts);
   };
 
   const deleteChart = (chartId) => {
+    const newCharts = (active.charts || []).filter((c) => c.id !== chartId);
     setPages((prev) =>
-      prev.map((p) =>
-        p.id === active.id ? { ...p, charts: p.charts.filter((c) => c.id !== chartId) } : p
-      )
+      prev.map((p) => (p.id === active.id ? { ...p, charts: newCharts } : p))
     );
+    persistCharts(active.id, newCharts);
     pushToast("rose", "Chart dihapus");
   };
 
@@ -1134,18 +1413,18 @@ export default function App() {
   const editChart = (chart) => {
     const newTitle = prompt("Masukkan judul baru untuk chart:", chart.title);
     if (newTitle && newTitle.trim()) {
-      setPages((prev) =>
-        prev.map((p) =>
-          p.id === active.id
-            ? { ...p, charts: p.charts.map((c) => (c.id === chart.id ? { ...c, title: newTitle.trim() } : c)) }
-            : p
-        )
+      const newCharts = (active.charts || []).map((c) =>
+        c.id === chart.id ? { ...c, title: newTitle.trim() } : c
       );
+      setPages((prev) =>
+        prev.map((p) => (p.id === active.id ? { ...p, charts: newCharts } : p))
+      );
+      persistCharts(active.id, newCharts);
       pushToast("emerald", "Chart berhasil diperbarui");
     }
   };
 
-  if (!authed) return <LoginScreen onLogin={login} />;
+  if (!authed) return <LoginScreen onLogin={handleLoginSuccess} onToast={pushToast} />;
 
   const renderPageRow = (p) => {
     const Icon = ICONS[p.icon] ?? IconChart;
@@ -1163,11 +1442,8 @@ export default function App() {
           <input
             autoFocus
             defaultValue={p.name}
-            onBlur={(e) => {
-              setPages((prev) => prev.map((x) => (x.id === p.id ? { ...x, name: e.target.value || x.name } : x)));
-              setRenaming(null);
-            }}
-            onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
+            onBlur={(e) => savePageRename(p.id, e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && savePageRename(p.id, e.target.value)}
             onClick={(e) => e.stopPropagation()}
             className="w-full rounded border border-indigo bg-white px-1.5 py-0.5 text-sm outline-none"
           />
@@ -1243,7 +1519,7 @@ export default function App() {
             <IconRefresh width={13} className={booting ? "animate-spin" : ""} /> Demo: Skeleton Loading (2c)
           </button>
 
-          {/* User profile dropdown: avatar user + nama, dropdown berisi tombol Logout */}
+          {/* User profile dropdown: avatar user + nama, dropdown berisi tombol Logout & BYOK */}
           <div className="relative">
             <button
               type="button"
@@ -1251,23 +1527,33 @@ export default function App() {
               className="flex items-center gap-2 rounded-full py-1 pl-1 pr-2.5 transition-colors hover:bg-slate-100"
             >
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-indigo text-xs font-semibold text-white">
-                {initials("Ayu Rahma")}
+                {initials(currentUser?.name || "Ayu Rahma")}
               </span>
-              <span className="text-sm font-medium">Ayu Rahma</span>
+              <span className="text-sm font-medium">{currentUser?.name || "Ayu Rahma"}</span>
               <IconChevronDown width={14} className="text-ink-faint" />
             </button>
 
             {userMenu && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setUserMenu(false)} />
-                <div className="absolute right-0 top-11 z-20 w-44 overflow-hidden rounded-lg border border-line bg-white py-1 text-sm shadow-lg">
-                  <div className="border-b border-line px-3 py-2 text-xs text-ink-faint">ayu@northstar.io</div>
+                <div className="absolute right-0 top-11 z-20 w-48 overflow-hidden rounded-lg border border-line bg-white py-1 text-sm shadow-lg">
+                  <div className="border-b border-line px-3 py-2 text-xs text-ink-faint">
+                    {currentUser?.email || "ayu@northstar.io"}
+                  </div>
                   <button
                     type="button"
                     onClick={() => {
-                      setAuthed(false);
                       setUserMenu(false);
+                      setByokOpen(true);
                     }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-ink-soft hover:bg-slate-50"
+                  >
+                    <IconSparkle width={15} className="text-indigo" /> BYOK (LLM API Key)
+                  </button>
+                  <div className="h-px bg-line" />
+                  <button
+                    type="button"
+                    onClick={handleLogout}
                     className="flex w-full items-center gap-2 px-3 py-2 text-rose hover:bg-rose/5"
                   >
                     <IconClose width={15} /> Logout
@@ -1312,7 +1598,7 @@ export default function App() {
           ) : active.isInteractiveDemo ? (
             /* 3b & 10: Interactive States Showcase */
             <InteractiveStatesView onTriggerToast={pushToast} />
-          ) : active.charts.length === 0 ? (
+          ) : !active.charts || active.charts.length === 0 ? (
             /* 2b: Page Manager — Empty State */
             <div className="mt-8 flex flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed border-line py-24 text-center">
               <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-indigo-soft text-indigo">
@@ -1393,6 +1679,14 @@ export default function App() {
         />
       )}
 
+      {/* Fase 3: BYOK Modal */}
+      {byokOpen && (
+        <ByokModal
+          onClose={() => setByokOpen(false)}
+          onSaved={(tone, msg) => pushToast(tone, msg)}
+        />
+      )}
+
       {/* 10. Toast Notifications Stack */}
       <ToastStack toasts={toasts} dismiss={dismiss} />
     </div>
@@ -1400,14 +1694,28 @@ export default function App() {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Login Screen
+// 1. Login Screen with Real API authentication
 // ---------------------------------------------------------------------------
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, onToast }) {
   const [email, setEmail] = useState("ayu@northstar.io");
-  const [pw, setPw] = useState("");
-  const submit = (e) => {
+  const [pw, setPw] = useState("password");
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const submit = async (e) => {
     e.preventDefault();
-    onLogin();
+    setLoading(true);
+    setErrorMsg("");
+    try {
+      const res = await apiLogin(email.trim(), pw);
+      onLogin(res.user);
+    } catch (err) {
+      console.error("Login failed:", err);
+      setErrorMsg(err.message || "Email atau password salah.");
+      if (onToast) onToast("rose", "Gagal login: Periksa kembali email dan password");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -1419,6 +1727,14 @@ function LoginScreen({ onLogin }) {
           </span>
           <div className="text-lg font-semibold tracking-tight text-ink">Northstar Analytics</div>
         </div>
+
+        {errorMsg && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg bg-rose/10 p-2.5 text-xs font-medium text-rose">
+            <IconWarning width={15} />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
         <div className="space-y-4">
           <Field label="Email">
             <input
@@ -1437,8 +1753,16 @@ function LoginScreen({ onLogin }) {
               onChange={(e) => setPw(e.target.value)}
             />
           </Field>
-          <Btn type="submit" className="w-full bg-indigo hover:bg-indigo-dark py-2.5 text-sm font-semibold">
-            Login
+          <Btn
+            type="submit"
+            disabled={loading}
+            className="w-full bg-indigo hover:bg-indigo-dark py-2.5 text-sm font-semibold min-h-[42px]"
+          >
+            {loading ? (
+              <span className="spin h-4 w-4 rounded-full border-2 border-white/40 border-t-white" />
+            ) : (
+              "Login"
+            )}
           </Btn>
         </div>
       </form>

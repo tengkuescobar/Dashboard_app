@@ -170,31 +170,63 @@ class AiAgentController extends Controller
             return response()->json(['yaml' => $mockYaml]);
         }
 
+        // Check if prompt matches available data
+        $matchesSales = stripos($prompt, 'sale') !== false || stripos($prompt, 'category') !== false || stripos($prompt, 'kategori') !== false || stripos($prompt, 'penjualan') !== false || stripos($prompt, 'product') !== false;
+        $matchesRevenue = stripos($prompt, 'revenue') !== false || stripos($prompt, 'pendapatan') !== false || stripos($prompt, 'region') !== false || stripos($prompt, 'wilayah') !== false || stripos($prompt, 'omset') !== false;
+        $matchesGeneric = stripos($prompt, 'chart') !== false || stripos($prompt, 'bar') !== false || stripos($prompt, 'line') !== false || stripos($prompt, 'donut') !== false;
+
+        if (!$matchesSales && !$matchesRevenue && !$matchesGeneric) {
+            return response()->json([
+                'no_data' => true,
+                'message' => 'Maaf, saya tidak menemukan data yang sesuai.',
+                'available_queries' => ['orders', 'sessions', 'subscriptions', 'sales_by_category', 'revenue_by_region']
+            ]);
+        }
+
         // Simple keyword matching for mock response
         $template = 'bar_chart';
         $queryId = 'sales_by_category';
         $dim = 'category';
         $met = 'quantity';
+        $chartType = 'bar';
 
         if (stripos($prompt, 'garis') !== false || stripos($prompt, 'line') !== false || stripos($prompt, 'tren') !== false) {
             $template = 'line_chart';
+            $chartType = 'line';
         } elseif (stripos($prompt, 'lingkaran') !== false || stripos($prompt, 'donut') !== false || stripos($prompt, 'pie') !== false || stripos($prompt, 'komposisi') !== false) {
             $template = 'donut_chart';
+            $chartType = 'donut';
         }
 
-        if (stripos($prompt, 'revenue') !== false || stripos($prompt, 'pendapatan') !== false || stripos($prompt, 'region') !== false || stripos($prompt, 'wilayah') !== false) {
+        if ($matchesRevenue) {
             $queryId = 'revenue_by_region';
             $dim = 'region';
             $met = 'revenue';
+            $chartTitle = 'Revenue by Region';
+            $endpoint = '/api/reports/region-revenue';
+        } else {
+            $chartTitle = 'Sales by Category';
+            $endpoint = '/api/reports/category-summary';
         }
 
-        $mockYaml = "title: \"AI Generated: " . ucfirst($template) . "\"\ntemplate: \"{$template}\"\ndata_source:\n  type: \"catalog\"\n  query_id: \"{$queryId}\"\n  dimension: \"{$dim}\"\n  metric: \"{$met}\"";
+        $mockYaml = "title: \"{$chartTitle}\"\ntemplate: \"{$template}\"\ndata_source:\n  type: \"catalog\"\n  query_id: \"{$queryId}\"\n  dimension: \"{$dim}\"\n  metric: \"{$met}\"";
 
         $validationError = $this->validateAiOutput($mockYaml);
         if ($validationError) {
             return response()->json(['error' => $validationError], 422);
         }
 
-        return response()->json(['yaml' => $mockYaml]);
+        return response()->json([
+            'yaml' => $mockYaml,
+            'chart' => [
+                'title' => $chartTitle,
+                'type' => $chartType,
+                'endpoint' => $endpoint,
+                'dimension' => $dim,
+                'metric' => $met,
+                'w' => 1,
+                'h' => 1
+            ]
+        ]);
     }
 }
